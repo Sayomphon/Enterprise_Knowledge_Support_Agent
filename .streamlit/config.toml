@@ -1,0 +1,7 @@
+# Streamlit theme aligned with the "Enterprise Logic" design system
+# defined in app.py: Enterprise Blue on a light neutral surface.
+[theme]
+primaryColor = "#0052CC"
+backgroundColor = "#f8f9fb"
+secondaryBackgroundColor = "#f3f4f6"
+textColor = "#191c1e"

@@ -1,0 +1,100 @@
+[
+  {
+    "id": "ho_normal_01",
+    "category": "normal",
+    "query": "ต้องยื่นเบิกค่าใช้จ่ายภายในกี่วันหลังจ่ายเงิน",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-001", "CHAT-001"]
+  },
+  {
+    "id": "ho_normal_02",
+    "category": "normal",
+    "query": "ลาป่วยติดต่อกันหลายวันต้องใช้ใบรับรองแพทย์เมื่อไหร่",
+    "expected_route": "answered",
+    "expected_sources": ["HR-002"]
+  },
+  {
+    "id": "ho_normal_03",
+    "category": "normal",
+    "query": "วันลาพักร้อนที่ใช้ไม่หมดยกไปปีหน้าได้หรือไม่",
+    "expected_route": "answered",
+    "expected_sources": ["HR-001"]
+  },
+  {
+    "id": "ho_normal_04",
+    "category": "normal",
+    "query": "พนักงานทดลองงานขอทำงานจากที่บ้านได้หรือไม่",
+    "expected_route": "answered",
+    "expected_sources": ["HR-003"]
+  },
+  {
+    "id": "ho_noisy_01",
+    "category": "noisy",
+    "query": "เบิกค่าที่จอดรถตอนไปหาลูกค้าได้ป่าว",
+    "expected_route": "answered",
+    "expected_sources": ["CHAT-003", "FIN-001"]
+  },
+  {
+    "id": "ho_noisy_02",
+    "category": "noisy",
+    "query": "จะลาพักผ่อนพรุ้งนี้เลยทันมั้ยอะ",
+    "expected_route": "answered",
+    "expected_sources": ["HR-001", "CHAT-002"]
+  },
+  {
+    "id": "ho_noisy_03",
+    "category": "noisy",
+    "query": "สลิปโอนเงินใช้แทนใบเสดได้มั้ย",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-002"]
+  },
+  {
+    "id": "ho_ood_01",
+    "category": "ood",
+    "query": "พยากรณ์อากาศพรุ่งนี้ที่กรุงเทพเป็นอย่างไร",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "ho_ood_02",
+    "category": "ood",
+    "query": "ซื้อกองทุนรวมตัวไหนดีตอนนี้",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "ho_ood_03",
+    "category": "ood",
+    "query": "ร้านกาแฟแถวออฟฟิศร้านไหนอร่อยสุด",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "ho_unsupported_01",
+    "category": "unsupported",
+    "query": "ลาแต่งงานใช้สิทธิ์ได้กี่วัน",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "ho_unsupported_02",
+    "category": "unsupported",
+    "query": "เบิกค่ารักษาพยาบาลกับบริษัทได้ไหม",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "ho_unsupported_03",
+    "category": "unsupported",
+    "query": "ค่าโรงแรมตอนไปทำงานต่างจังหวัดเบิกได้เท่าไหร่",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "ho_unsupported_04",
+    "category": "unsupported",
+    "query": "โบนัสประจำปีจ่ายเดือนไหน",
+    "expected_route": "fallback",
+    "expected_sources": []
+  }
+]

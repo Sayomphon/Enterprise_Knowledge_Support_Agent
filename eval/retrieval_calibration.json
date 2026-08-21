@@ -1,0 +1,149 @@
+[
+  {
+    "id": "cal_normal_01",
+    "category": "normal",
+    "query": "ขั้นตอนการเบิกค่าแท็กซี่หลังทำ OT ต้องทำอย่างไร",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-001", "CHAT-001"]
+  },
+  {
+    "id": "cal_normal_02",
+    "category": "normal",
+    "query": "พนักงานมีสิทธิ์ลาพักร้อนกี่วันต่อปี",
+    "expected_route": "answered",
+    "expected_sources": ["HR-001"]
+  },
+  {
+    "id": "cal_normal_03",
+    "category": "normal",
+    "query": "ลาป่วยต้องแจ้งหัวหน้าภายในกี่โมง",
+    "expected_route": "answered",
+    "expected_sources": ["HR-002"]
+  },
+  {
+    "id": "cal_normal_04",
+    "category": "normal",
+    "query": "ทำงานจากที่บ้านได้สัปดาห์ละกี่วัน",
+    "expected_route": "answered",
+    "expected_sources": ["HR-003"]
+  },
+  {
+    "id": "cal_normal_05",
+    "category": "normal",
+    "query": "ใบเสร็จหายต้องทำอย่างไรถึงจะเบิกได้",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-002", "CHAT-003"]
+  },
+  {
+    "id": "cal_noisy_01",
+    "category": "noisy",
+    "query": "ลาพักรอ้น 2 วันกดตรงไหนอะ",
+    "expected_route": "answered",
+    "expected_sources": ["CHAT-002", "HR-001"]
+  },
+  {
+    "id": "cal_noisy_02",
+    "category": "noisy",
+    "query": "เบิกตังค่า taxi ได้ปะ",
+    "expected_route": "answered",
+    "expected_sources": ["CHAT-001", "FIN-001"]
+  },
+  {
+    "id": "cal_noisy_03",
+    "category": "noisy",
+    "query": "ใบเสดหาย เคลมได้มั้ย",
+    "expected_route": "answered",
+    "expected_sources": ["CHAT-003", "FIN-002"]
+  },
+  {
+    "id": "cal_noisy_04",
+    "category": "noisy",
+    "query": "ขอ wfh อาทิตย์นึงได้กี่วันอะ",
+    "expected_route": "answered",
+    "expected_sources": ["HR-003"]
+  },
+  {
+    "id": "cal_noisy_05",
+    "category": "noisy",
+    "query": "ลาป่วยพรุ้งนี้ต้องบอกใครก่อนอะ",
+    "expected_route": "answered",
+    "expected_sources": ["HR-002"]
+  },
+  {
+    "id": "cal_ambig_01",
+    "category": "ambiguous",
+    "query": "เมื่อวานไปหาลูกค้า จ่ายค่าที่จอดรถเอง ขอคืนเงินได้ไหม",
+    "expected_route": "answered",
+    "expected_sources": ["CHAT-003", "FIN-001"]
+  },
+  {
+    "id": "cal_ambig_02",
+    "category": "ambiguous",
+    "query": "ลาหยุดยาวหลายวันต้องแจ้งล่วงหน้านานแค่ไหน",
+    "expected_route": "answered",
+    "expected_sources": ["HR-001"]
+  },
+  {
+    "id": "cal_ood_01",
+    "category": "ood",
+    "query": "Bitcoin วันนี้ราคาเท่าไหร่",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "cal_ood_02",
+    "category": "ood",
+    "query": "แมนยูคืนนี้เตะกี่โมง",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "cal_ood_03",
+    "category": "ood",
+    "query": "วิธีทำต้มยำกุ้งให้อร่อย",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "cal_ood_04",
+    "category": "ood",
+    "query": "เงินเดือนของหัวหน้าฝ่ายการเงินคือเท่าไหร่",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "cal_unsupported_01",
+    "category": "unsupported",
+    "query": "ลาคลอดต้องใช้ใบรับรองแพทย์ไหม",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "cal_unsupported_02",
+    "category": "unsupported",
+    "query": "ลาบวชต้องแจ้งล่วงหน้ากี่วัน",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "cal_unsupported_03",
+    "category": "unsupported",
+    "query": "ค่าอาหารระหว่างทำงานเบิกได้ไหม",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "cal_unsupported_04",
+    "category": "unsupported",
+    "query": "เงินเดือนออกวันไหน",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "cal_unsupported_05",
+    "category": "unsupported",
+    "query": "ลาได้กี่วัน",
+    "expected_route": "fallback",
+    "expected_sources": []
+  }
+]
