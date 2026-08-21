@@ -1,0 +1,18 @@
+# Secrets are read from the environment only; the template lives in .env.example.
+.env
+
+# Runtime telemetry is machine-local; only the directory marker is tracked.
+logs/*.jsonl
+
+# Local environments and tool caches.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.cache/
+.DS_Store
+.claude/
+
+# Local scratch artefacts (screenshots, exports); never part of the deliverable.
+tmp/
+Enterprise_Knowledge_Support_Agent.md
