@@ -2,6 +2,11 @@
 source_id: HR-003
 title: นโยบายการทำงานจากที่บ้าน (Work From Home)
 source_type: policy
+authority: authoritative
+status: active
+topics:
+  - work_from_home
+canonical_source_ids: []
 ---
 
 บริษัทใช้รูปแบบการทำงานแบบผสมผสาน พนักงานประจำที่ผ่านทดลองงานแล้วสามารถ

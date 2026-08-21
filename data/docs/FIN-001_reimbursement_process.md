@@ -2,6 +2,11 @@
 source_id: FIN-001
 title: ขั้นตอนการเบิกค่าใช้จ่าย
 source_type: policy
+authority: authoritative
+status: active
+topics:
+  - reimbursement_process
+canonical_source_ids: []
 ---
 
 พนักงานสามารถเบิกค่าใช้จ่ายที่เกี่ยวข้องกับการทำงานผ่านระบบ Expense Portal เท่านั้น

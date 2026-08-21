@@ -2,6 +2,11 @@
 source_id: HR-001
 title: ระเบียบการลาพักร้อน
 source_type: policy
+authority: authoritative
+status: active
+topics:
+  - annual_leave
+canonical_source_ids: []
 ---
 
 พนักงานประจำมีสิทธิ์ลาพักร้อน 10 วันทำการต่อปีปฏิทิน เมื่ออายุงานครบ 3 ปี

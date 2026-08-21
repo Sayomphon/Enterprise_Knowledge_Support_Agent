@@ -11,6 +11,8 @@ __pycache__/
 .pytest_cache/
 .cache/
 .DS_Store
+.claude/
 
-# Local source export; intentionally excluded from the published repository.
+# Local scratch artefacts (screenshots, exports); never part of the deliverable.
+tmp/
 Enterprise_Knowledge_Support_Agent.md

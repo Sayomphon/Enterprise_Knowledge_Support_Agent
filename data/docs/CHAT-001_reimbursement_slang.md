@@ -2,6 +2,14 @@
 source_id: CHAT-001
 title: แชตสอบถามการเบิกค่าแท็กซี่หลังทำ OT
 source_type: chat
+authority: supplementary
+status: active
+topics:
+  - reimbursement_process
+  - receipt_policy
+canonical_source_ids:
+  - FIN-001
+  - FIN-002
 ---
 
 พนักงาน: พี่ครับ เมื่อคืนอยู่ปั่นงานถึงเกือบห้าทุ่ม เบิกตังค่า taxi กลับบ้านได้ปะ

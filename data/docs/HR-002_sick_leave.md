@@ -2,6 +2,11 @@
 source_id: HR-002
 title: ระเบียบการลาป่วย
 source_type: policy
+authority: authoritative
+status: active
+topics:
+  - sick_leave
+canonical_source_ids: []
 ---
 
 พนักงานมีสิทธิ์ลาป่วยตามที่ป่วยจริงไม่เกิน 30 วันทำการต่อปี โดยได้รับค่าจ้าง

@@ -2,6 +2,12 @@
 source_id: FIN-002
 title: นโยบายใบเสร็จและเอกสารประกอบการเบิก
 source_type: policy
+authority: authoritative
+status: active
+topics:
+  - receipt_policy
+  - reimbursement_process
+canonical_source_ids: []
 ---
 
 ทุกรายการเบิกจ่ายต้องมีหลักฐานทางการเงินประกอบ ฝ่ายการเงินจะตรวจสอบเอกสาร

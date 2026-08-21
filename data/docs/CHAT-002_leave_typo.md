@@ -2,6 +2,12 @@
 source_id: CHAT-002
 title: แชตสอบถามวิธีกดลาพักร้อนใน HR Portal
 source_type: chat
+authority: supplementary
+status: active
+topics:
+  - annual_leave
+canonical_source_ids:
+  - HR-001
 ---
 
 พนักงาน: พี่ HR คะ ลาพักรอ้น 2 วันต้องกดตรงไหนอะ หาเมนูไม่เจอเลยค่า

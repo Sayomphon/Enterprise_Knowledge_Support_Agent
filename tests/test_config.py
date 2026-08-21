@@ -22,6 +22,7 @@ _BASELINE_ENV = {
     "TOP_K": "3",
     "MAX_QUERY_CHARS": "500",
     "CORPUS_DIR": "data/docs",
+    "ENABLE_OPS_VIEW": "false",
 }
 
 
@@ -69,6 +70,66 @@ class TestEnvHelpers(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "EXAMPLE_INT.*'1.5'"):
                 config_module._env_int("EXAMPLE_INT", "0")
 
+    def test_flag_helper_accepts_the_usual_boolean_spellings(self) -> None:
+        for literal, expected in (
+            ("true", True),
+            ("TRUE", True),
+            ("1", True),
+            ("on", True),
+            ("false", False),
+            ("0", False),
+            ("off", False),
+        ):
+            with self.subTest(literal=literal):
+                with mock.patch.dict(os.environ, {"EXAMPLE_FLAG": literal}):
+                    self.assertIs(
+                        config_module._env_flag("EXAMPLE_FLAG", "false"),
+                        expected,
+                    )
+
+    def test_unknown_flag_value_is_rejected_rather_than_assumed(
+        self,
+    ) -> None:
+        # A privacy flag that silently resolves a typo to the permissive
+        # value is worse than one that refuses to start.
+        with mock.patch.dict(os.environ, {"EXAMPLE_FLAG": "treu"}):
+            with self.assertRaisesRegex(ValueError, "EXAMPLE_FLAG.*'treu'"):
+                config_module._env_flag("EXAMPLE_FLAG", "false")
+
+
+class TestCredentialPresence(unittest.TestCase):
+    """Secrets are reported by presence only, and read at call time."""
+
+    def test_missing_and_blank_keys_report_as_unconfigured(self) -> None:
+        for value in ("", "   "):
+            with self.subTest(value=repr(value)):
+                with mock.patch.dict(
+                    os.environ, {"OPENAI_API_KEY": value}
+                ):
+                    self.assertFalse(config_module.has_llm_credential())
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(config_module.has_llm_credential())
+
+    def test_configured_key_reports_as_configured(self) -> None:
+        with mock.patch.dict(
+            os.environ, {"OPENAI_API_KEY": "sk-test-not-a-real-key"}
+        ):
+            self.assertTrue(config_module.has_llm_credential())
+
+    def test_the_module_exposes_no_credential_value(self) -> None:
+        # Presence is all the pipeline needs; a module-level constant
+        # holding the value could be logged or rendered by accident.
+        secret = "sk-test-not-a-real-key"
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": secret}):
+            values = [
+                getattr(config_module, name)
+                for name in dir(config_module)
+                if not name.startswith("__")
+            ]
+
+        strings = [value for value in values if isinstance(value, str)]
+        self.assertNotIn(secret, strings)
+
 
 class TestImportTimeValidation(unittest.TestCase):
     """Malformed settings must stop the import, not linger until runtime."""
@@ -111,6 +172,18 @@ class TestImportTimeValidation(unittest.TestCase):
         self._reload_expecting_error(
             {"MAX_QUERY_CHARS": "-5"}, "MAX_QUERY_CHARS"
         )
+
+    def test_unparseable_ops_view_flag_is_rejected(self) -> None:
+        self._reload_expecting_error(
+            {"ENABLE_OPS_VIEW": "maybe"}, "ENABLE_OPS_VIEW"
+        )
+
+    def test_ops_view_defaults_to_off_when_unset(self) -> None:
+        self.addCleanup(self._restore_module)
+        environment = {**_BASELINE_ENV, "ENABLE_OPS_VIEW": ""}
+        with mock.patch.dict(os.environ, environment):
+            module = importlib.reload(config_module)
+            self.assertFalse(module.ENABLE_OPS_VIEW)
 
     def test_relative_corpus_dir_is_anchored_to_the_project_root(self) -> None:
         self.addCleanup(self._restore_module)

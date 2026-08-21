@@ -2,6 +2,14 @@
 source_id: CHAT-003
 title: แชตสอบถามการเคลมค่าที่จอดรถกรณีใบเสร็จหาย
 source_type: chat
+authority: supplementary
+status: active
+topics:
+  - reimbursement_process
+  - receipt_policy
+canonical_source_ids:
+  - FIN-001
+  - FIN-002
 ---
 
 พนักงาน: พี่ครับ เมื่อวานไปเจอลูกค้าที่ตึกฝั่งสาทร จ่ายค่าที่จอดเองไปก่อน
