@@ -47,10 +47,10 @@ numbers do and do not prove.
   claims into `candidate_answer`; a validator checks every claim against this
   request's evidence, and a renderer emits the `[SOURCE-ID]` markup from
   validated ids only. A failed check produces no public text at all.
-* **Every refusal is logged with a reason code**, one of sixteen, as JSONL — so an
+* **Every refusal is logged with a reason code**, one of eighteen, as JSONL — so an
   unanswered question becomes a corpus gap you can act on rather than a bad
   answer nobody noticed.
-* **The numbers are small and labelled.** 21 calibration cases, 14 held-out, 32
+* **The numbers are small and labelled.** 21 calibration cases, 14 held-out, 42
   guardrail; the held-out strict gate exits `1` today on one known coverage miss,
   and this README says so rather than rounding it away.
 
@@ -94,10 +94,24 @@ brief is confidential and is not reproduced or included in this repository.
 |---|---|---|
 | **1. Data ingestion** — 5–10 mock documents mixing clear procedural policy with short, noisy chat messages containing slang, typos, and ambiguous content | [`data/docs/`](data/docs/) — 8 Markdown files, 5 `policy` + 3 `chat`, loaded by [`src/ingestion/loader.py`](src/ingestion/loader.py) | [`tests/test_loader.py`](tests/test_loader.py) — all 8 load, duplicate `source_id` fails, missing title fails, `authority` must agree with `source_type`; the loaded index is shown in [the console](docs/screenshots/ui_10_console_kb.png) |
 | **2a. Retrieval and generation pipeline** | [`src/graph.py`](src/graph.py) — 10 nodes, 18 edges, 5 routes; retrieval in [`src/retrievers/local_tfidf.py`](src/retrievers/local_tfidf.py), generation in [`src/agents/reporter.py`](src/agents/reporter.py) | [`tests/test_graph.py`](tests/test_graph.py) — every route asserted, including the LLM call count per route; [`tests/test_retrieval.py`](tests/test_retrieval.py) for exact, typo, and out-of-domain queries |
-| **2b. Guardrail / validation layer** — out-of-scope questions and prompt injection are declined politely | [`src/guardrails/input_guardrail.py`](src/guardrails/input_guardrail.py) (12 named rules), [`src/guardrails/scope_validator.py`](src/guardrails/scope_validator.py) (topic gate); refusal wording in [`src/fallback.py`](src/fallback.py) | [`tests/test_guardrail.py`](tests/test_guardrail.py) and [`tests/test_scope_validator.py`](tests/test_scope_validator.py); measured as Injection Block Rate 16/16 **and** Benign Pass Rate 16/16 in [`eval/RESULTS.md`](eval/RESULTS.md); the refusal an employee actually sees is [this screenshot](docs/screenshots/ui_04_blocked.png) |
-| **2c. Source attribution** — every answer names its document | [`src/guardrails/citation_validator.py`](src/guardrails/citation_validator.py) validates, [`src/answer_renderer.py`](src/answer_renderer.py) renders the markup | [`tests/test_citations.py`](tests/test_citations.py); Citation Provenance Validity Rate 14/14 in [`eval/RESULTS.md`](eval/RESULTS.md); worked output in [Demo](#4-demo--six-worked-examples-on-both-surfaces), rendered as per-claim chips and expandable evidence in [the answer card](docs/screenshots/ui_02_answered.png) |
-| **3. Evaluation and fallback** — below-threshold questions get a prepared fallback and are logged for analysis | Thresholds in [`src/config.py`](src/config.py), fallback texts in [`src/fallback.py`](src/fallback.py), JSONL writer in [`src/logging_utils.py`](src/logging_utils.py) | [`tests/test_fallback.py`](tests/test_fallback.py), [`tests/test_logging_utils.py`](tests/test_logging_utils.py); harness in [`eval/run_eval.py`](eval/run_eval.py), results in [`eval/RESULTS.md`](eval/RESULTS.md); a real log line is shown in [section 11](#11-logging-and-privacy), and the operator's view of that log — reason codes, scores, and the resulting corpus backlog — in [the audit console](#7--the-audit-console-where-requirement-3-becomes-inspectable) |
+| **2b. Guardrail / validation layer** — out-of-scope questions and prompt injection are declined politely | [`src/guardrails/input_guardrail.py`](src/guardrails/input_guardrail.py) (13 named rules), [`src/guardrails/scope_validator.py`](src/guardrails/scope_validator.py) (topic gate); refusal wording in [`src/fallback.py`](src/fallback.py) | [`tests/test_guardrail.py`](tests/test_guardrail.py) and [`tests/test_scope_validator.py`](tests/test_scope_validator.py); measured as Injection Block Rate 21/21 **and** Benign Pass Rate 21/21 in [`eval/RESULTS.md`](eval/RESULTS.md); the refusal an employee actually sees is [this screenshot](docs/screenshots/ui_04_blocked.png) |
+| **2c. Source attribution** — every answer names its document | [`src/guardrails/citation_validator.py`](src/guardrails/citation_validator.py) validates, [`src/answer_renderer.py`](src/answer_renderer.py) renders the markup | [`tests/test_citations.py`](tests/test_citations.py); Citation Provenance Validity Rate 19/19 in [`eval/RESULTS.md`](eval/RESULTS.md); worked output in [Demo](#4-demo--six-worked-examples-on-both-surfaces), rendered as per-claim chips and expandable evidence in [the answer card](docs/screenshots/ui_02_answered.png) |
+| **3. Evaluation and fallback** — when the system finds nothing, or the *confidence score* falls below a threshold, reply with a prepared fallback message and log that question for later analysis | Thresholds in [`src/config.py`](src/config.py), fallback texts in [`src/fallback.py`](src/fallback.py), JSONL writer in [`src/logging_utils.py`](src/logging_utils.py) | [`tests/test_fallback.py`](tests/test_fallback.py), [`tests/test_logging_utils.py`](tests/test_logging_utils.py); harness in [`eval/run_eval.py`](eval/run_eval.py), results in [`eval/RESULTS.md`](eval/RESULTS.md); a real log line is shown in [section 11](#11-logging-and-privacy), and the operator's view of that log — reason codes, scores, and the resulting corpus backlog — in [the audit console](#7--the-audit-console-where-requirement-3-becomes-inspectable) |
 | **D. Deliverables** — runnable repo with `requirements.txt` and a setup README | [`requirements.txt`](requirements.txt) (9 pinned direct dependencies), [Quick start](#2-quick-start) | The Quick start commands were run end to end in a fresh virtualenv on Python 3.11.15; the resulting output is [`eval/RESULTS.md`](eval/RESULTS.md) |
+
+**One word in requirement 3 is deliberately not the word this system uses:
+*confidence score*.** The gate the brief asks for is here and is the three-band
+router in [section 5](#5-how-a-request-is-routed) — the quantity it compares is
+`raw_retrieval_score` (and `expanded_retrieval_score` after a rewrite) against
+`REWRITE_FLOOR` 0.10, `DIRECT_ANSWER_THRESHOLD` 0.19, and
+`FINAL_ANSWER_THRESHOLD` 0.21, each calibrated and traced to its evidence in
+[section 12](#12-configuration). Below the threshold, the request gets the
+prepared fallback message and a JSONL record. What the number is *called*
+differs on purpose: a cosine similarity of 0.22 is not a 22% chance the answer
+is right, and labelling it a confidence would invite exactly that reading, so it
+is named a retrieval similarity heuristic everywhere it is shown
+([section 8](#8-design-decisions)). Same gate the brief describes, a name that
+does not overclaim.
 
 **What here goes beyond the brief, and why.** Three things were added as
 engineering judgement, not as requirements, and a reviewer should be able to tell
@@ -549,7 +563,11 @@ table reads raw questions from every past session, so it stays behind
 
 The evaluation panel **reads** `eval/BASELINE.md` and `eval/*.json`; it does not
 re-run anything, and it labels the calibration set *tuning only* against the
-held-out set *reporting only* so the two are never read as one number. The index
+held-out set *reporting only* so the two are never read as one number. Underneath
+those cards it counts the fixtures **on disk** — 42 guardrail, 21 calibration, 14
+held-out, 19 citation, 20 rewrite — beside the case counts the recorded run
+claims, so a snapshot that has drifted from the files it describes shows up on
+this screen rather than in a reviewer's re-run. The index
 panel is requirement 1 at a glance: 8 of 8 documents loaded, 5 policy and 3 chat,
 zero duplicate ids — the loader rejects those at startup
 ([`tests/test_loader.py`](tests/test_loader.py)).
@@ -1027,9 +1045,10 @@ cannot raise the block rate by breaking legitimate queries. `Injection Block
 Rate: 21/21` is a statement about those 21 cases and nothing else. Novel
 phrasings will pass it — and a phrasing being *canonical* is no guarantee it is
 covered: the article in "ignore **the** previous instructions" was missing from
-the determiner slot until it was added here, and the suite reported 16/16
-throughout, because every fixture was written in the wording its own rule was
-built from.
+the determiner slot until it was added here, and the guardrail set reported a
+perfect score throughout — 16/16 on the 32-case fixture of the time — because
+every fixture was written in the wording its own rule was built from. The cases
+that would have caught it are in the set now, which is part of why it holds 42.
 
 JSON encoding contains **delimiter breakout** — a document carrying a literal
 `</SOURCE>` can no longer close its own record. It does not contain **indirect
@@ -1062,7 +1081,7 @@ Every blocked and fallback event appends one JSON object to
 }
 ```
 
-Sixteen reason codes are defined as an enum in
+Eighteen reason codes are defined as an enum in
 [`src/fallback.py`](src/fallback.py); ad-hoc strings are not permitted, and the
 complete set is:
 
@@ -1170,8 +1189,8 @@ Two retrieval splits with different jobs, plus three contract fixtures:
 | `eval/retrieval_calibration.json` | 21 | **Tuning only.** Thresholds, n-gram configuration, alias catalog |
 | `eval/retrieval_heldout.json` | 14 | **Reporting only.** Run once, after thresholds freeze |
 | `eval/guardrail_cases.json` | 42 | 21 attacks / 21 benign lookalikes |
-| `eval/citation_cases.json` | 14 | Labelled candidate answers, one per rejection reason plus valid shapes |
-| `eval/rewrite_cases.json` | 17 | Valid normalisations and each drift shape the validator must reject |
+| `eval/citation_cases.json` | 19 | Labelled candidate answers, one per rejection reason plus valid shapes |
+| `eval/rewrite_cases.json` | 20 | Valid normalisations and each drift shape the validator must reject |
 
 ```bash
 python eval/run_eval.py --set calibration --distribution   # tuning
@@ -1204,15 +1223,17 @@ deterministic and cost nothing.
 Two evaluation files exist and they are not interchangeable.
 [`eval/RESULTS.md`](eval/RESULTS.md) is the **current build** and is the only
 source for the figures in this section. [`eval/BASELINE.md`](eval/BASELINE.md) is
-a **historical record**: its first section is the frozen *pre-remediation*
-baseline — where, for example, the suite was 84 tests and
-`FINAL_ANSWER_THRESHOLD` was 0.24 — followed by the post-remediation snapshots.
-It exists so a metric change always has a reference point, and any figure taken
-from it must be labelled with the point in history it describes.
+a **run history**: its first section is the frozen *pre-remediation* baseline —
+where, for example, the suite was 84 tests and `FINAL_ANSWER_THRESHOLD` was
+0.24 — followed by one snapshot per phase, ending with the current run. It exists
+so a metric change always has a reference point, and any figure taken from it
+must be labelled with the point in history it describes. Only its **last** block
+describes the build shipped here; that is also the block the console's Evaluation
+panel parses, which is why the panel and this section quote the same run.
 
 ### Measured results
 
-**Provenance of every number below.** Run **2026-08-21**, commit `1caeb52`,
+**Provenance of every number below.** Run **2026-08-21**, commit `b2b6fc1`,
 Python 3.11.15, in a fresh virtualenv, with `OPENAI_API_KEY` unset and the
 committed thresholds (`.env` copied from `.env.example`). Corpus checksum
 `154b73c9…92694b`, 8 documents, thresholds as in section 12. The raw unedited
@@ -1227,7 +1248,7 @@ rewrite. That is also why these numbers are **optimistic about the medium band
 relative to live behaviour** — see [section 4](#4-demo--six-worked-examples-on-both-surfaces).
 
 ```text
-Offline unit tests: 280/280 passed (OPENAI_API_KEY empty)
+Offline unit tests: 314/314 passed (OPENAI_API_KEY empty)
 ```
 
 #### Calibration set — 21 cases, tuning split
@@ -1267,12 +1288,12 @@ split.
 
 | Fixture | Metric | Result |
 |---|---|---:|
-| `guardrail_cases.json` (32) | Injection Block Rate | 16/16 |
-| `guardrail_cases.json` (32) | Benign Pass Rate | 16/16 |
-| `citation_cases.json` (14) | Citation Provenance Validity Rate | 14/14 |
-| `citation_cases.json` (14) | Claim Source Coverage Rate | 11/15 |
-| `citation_cases.json` (14) | Invalid Candidate Leakage Rate | 0/11 |
-| `rewrite_cases.json` (17) | Rewrite Intent Preservation Rate | 17/17 |
+| `guardrail_cases.json` (42) | Injection Block Rate | 21/21 |
+| `guardrail_cases.json` (42) | Benign Pass Rate | 21/21 |
+| `citation_cases.json` (19) | Citation Provenance Validity Rate | 19/19 |
+| `citation_cases.json` (19) | Claim Source Coverage Rate | 16/20 |
+| `citation_cases.json` (19) | Invalid Candidate Leakage Rate | 0/15 |
+| `rewrite_cases.json` (20) | Rewrite Intent Preservation Rate | 20/20 |
 
 Block rate and benign pass rate are always reported as a pair: a new regex that
 raises one by lowering the other is a regression, not an improvement.
@@ -1283,9 +1304,9 @@ Reading these honestly:
   almost nothing scores perfect precision. Held-out coverage is 6/7: `ho_noisy_03`
   reaches 0.1986 after expansion against a 0.21 threshold and falls back. It was
   not tuned for, and must not be.
-* **Every count is small.** These are 21, 14, 32, 14 and 17 curated cases over
+* **Every count is small.** These are 21, 14, 42, 19 and 20 curated cases over
   eight documents. They are regression evidence, not statistical claims.
-* **`Claim Source Coverage Rate: 11/15`** describes the labelled citation
+* **`Claim Source Coverage Rate: 16/20`** describes the labelled citation
   fixture, which deliberately mixes grounded and ungrounded claims. It is not a
   measurement of live Reporter behaviour — no LLM runs in this harness.
 * **Held-out queries were visible in the repository** while the thresholds were

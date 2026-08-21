@@ -646,3 +646,69 @@ pass — not a number to be adjusted so a gate turns green.
   section 6 of the README states.
 - The live smoke test, the Git remote, and the clean-clone check remain open for
   the reasons recorded in the Phase 8 snapshot.
+
+---
+
+# Fixture-expansion re-measurement — commit `b2b6fc1`
+
+Recorded: 2026-08-21. Clean tree at `b2b6fc1`, fresh Python 3.11.15 virtualenv
+installed from pinned `requirements.txt`, `OPENAI_API_KEY` unset.
+
+Every snapshot above was measured before `cc424a1`, which widened
+`guardrail_cases.json`, `citation_cases.json`, and `rewrite_cases.json` and
+added the tests covering them. Those blocks therefore report contract metrics
+against fixture sizes the repository no longer has, and the console's Evaluation
+panel reads the newest block in this file — so without this snapshot an operator
+would be shown 16/16 on a 32-case guardrail set while the fixtures on disk hold
+42 cases and the README quotes 21/21. This block exists to keep the panel, the
+README, and `eval/RESULTS.md` describing one run.
+
+The retrieval splits were untouched by that commit: every calibration and
+held-out score below is unchanged from the Phase 8 snapshot, including the
+single held-out coverage miss, which is still `ho_noisy_03` and still must not
+be closed by moving a threshold.
+
+## Measured results
+
+```text
+Offline unit tests: 314/314 passed
+
+Calibration (21 cases), strict exit 0:
+  Retrieval Hit@3                          12/12
+  Answer-route Precision                   12/12
+  Answer-route Coverage                    12/12
+  OOD Fallback Accuracy                      9/9
+  Unsupported In-domain Fallback Accuracy    5/5
+  Authoritative Evidence Coverage Rate     12/12
+  Rewrite Recovery Rate                      4/4
+  Citation Provenance Validity Rate        19/19
+  Claim Source Coverage Rate               16/20
+  Invalid Candidate Leakage Rate            0/15
+  Rewrite Intent Preservation Rate         20/20
+
+Guardrail (42 cases), strict exit 0:
+  Injection Block Rate                     21/21
+  Benign Pass Rate                         21/21
+
+Held-out (14 cases), strict exit 1:
+  Retrieval Hit@3                            7/7
+  Answer-route Precision                     6/6
+  Answer-route Coverage                      6/7   <- the one gate failure
+  OOD Fallback Accuracy                      7/7
+  Unsupported In-domain Fallback Accuracy    4/4
+  Authoritative Evidence Coverage Rate       6/6
+  Rewrite Recovery Rate                      1/2
+```
+
+Commands used:
+
+```bash
+env -u OPENAI_API_KEY python -m unittest discover -s tests
+env -u OPENAI_API_KEY python eval/run_eval.py --set calibration --strict
+env -u OPENAI_API_KEY python eval/run_eval.py --set guardrail --strict
+env -u OPENAI_API_KEY python eval/run_eval.py --set heldout --strict
+```
+
+The verbatim stdout of the non-strict runs is `eval/RESULTS.md`, which stays the
+only file the README may quote current numbers from. This block is the same run
+in the shape the console parses.

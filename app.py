@@ -2453,7 +2453,7 @@ def _metric_rows_html(metrics: list[tuple[str, int, int, str]]) -> str:
     """Render one group's metrics as name, proportion bar, and fraction.
 
     The bar is one neutral colour on purpose. Some of these rates are good
-    at zero -- ``Invalid Candidate Leakage Rate: 0/11`` is the result the
+    at zero -- ``Invalid Candidate Leakage Rate: 0/15`` is the result the
     contract wants -- so colouring by proportion would tell the reader the
     opposite of what the baseline means. The proportion is the picture;
     the meaning stays in BASELINE.md.
