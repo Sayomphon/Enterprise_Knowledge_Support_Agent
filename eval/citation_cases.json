@@ -1,0 +1,197 @@
+[
+  {
+    "id": "cit_valid_single",
+    "claims": [
+      {
+        "text": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน",
+        "source_ids": ["FIN-001"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001", "CHAT-001", "FIN-002"],
+    "authoritative_ids": ["FIN-001", "FIN-002"],
+    "expected_valid": true
+  },
+  {
+    "id": "cit_valid_multiple_claims",
+    "claims": [
+      {
+        "text": "แจ้งหัวหน้าทีมก่อนเวลาเริ่มงาน",
+        "source_ids": ["HR-002"]
+      },
+      {
+        "text": "ดูสิทธิ์วันลาคงเหลือได้จากนโยบายวันลาประจำปี",
+        "source_ids": ["HR-001"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["HR-001", "HR-002"],
+    "authoritative_ids": ["HR-001", "HR-002"],
+    "expected_valid": true
+  },
+  {
+    "id": "cit_valid_policy_with_chat_context",
+    "claims": [
+      {
+        "text": "ค่าแท็กซี่หลังทำงานล่วงเวลาเบิกได้ตามจริงพร้อมใบเสร็จ",
+        "source_ids": ["FIN-001", "CHAT-001"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001", "CHAT-001"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": true
+  },
+  {
+    "id": "cit_missing_source_on_one_claim",
+    "claims": [
+      {
+        "text": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน",
+        "source_ids": ["FIN-001"]
+      },
+      {
+        "text": "ค่าอาหารระหว่างเดินทางเบิกได้ไม่เกินวันละ 500 บาท",
+        "source_ids": []
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": false,
+    "expected_reason": "missing_citation"
+  },
+  {
+    "id": "cit_fabricated_unknown_id",
+    "claims": [
+      {
+        "text": "ยื่นเบิกผ่าน Expense Portal ได้เลย",
+        "source_ids": ["ZZ-999"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": false,
+    "expected_reason": "fabricated_citation"
+  },
+  {
+    "id": "cit_real_document_not_selected",
+    "claims": [
+      {
+        "text": "ดูนโยบายการทำงานจากที่บ้านได้จากเอกสารนโยบาย",
+        "source_ids": ["HR-003"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001", "FIN-002"],
+    "authoritative_ids": ["FIN-001", "FIN-002"],
+    "expected_valid": false,
+    "expected_reason": "fabricated_citation"
+  },
+  {
+    "id": "cit_mixed_valid_and_fabricated",
+    "claims": [
+      {
+        "text": "เบิกได้ตามจริงตามนโยบายการเบิกค่าใช้จ่าย",
+        "source_ids": ["FIN-001"]
+      },
+      {
+        "text": "วงเงินพิเศษดูได้จากเอกสารเพิ่มเติม",
+        "source_ids": ["AB-123"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": false,
+    "expected_reason": "fabricated_citation"
+  },
+  {
+    "id": "cit_chat_only_claim",
+    "claims": [
+      {
+        "text": "เพื่อนร่วมงานบอกว่าเบิกค่าแท็กซี่ย้อนหลังได้ 60 วัน",
+        "source_ids": ["CHAT-001"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001", "CHAT-001"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": false,
+    "expected_reason": "no_authoritative_evidence"
+  },
+  {
+    "id": "cit_no_claims_without_flag",
+    "claims": [],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": false,
+    "expected_reason": "invalid_answer_structure"
+  },
+  {
+    "id": "cit_blank_claim_text",
+    "claims": [
+      {
+        "text": "   ",
+        "source_ids": ["FIN-001"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": false,
+    "expected_reason": "invalid_answer_structure"
+  },
+  {
+    "id": "cit_model_written_citation_markup",
+    "claims": [
+      {
+        "text": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน [FIN-001]",
+        "source_ids": ["FIN-001"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": false,
+    "expected_reason": "invalid_answer_structure"
+  },
+  {
+    "id": "cit_duplicate_source_ids",
+    "claims": [
+      {
+        "text": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน",
+        "source_ids": ["FIN-001", "FIN-001"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": false,
+    "expected_reason": "invalid_answer_structure"
+  },
+  {
+    "id": "cit_insufficient_evidence_flag",
+    "claims": [],
+    "insufficient_evidence": true,
+    "evidence_ids": ["FIN-001"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": false,
+    "expected_reason": "insufficient_reporter_evidence"
+  },
+  {
+    "id": "cit_insufficient_flag_with_claims",
+    "claims": [
+      {
+        "text": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน",
+        "source_ids": ["FIN-001"]
+      }
+    ],
+    "insufficient_evidence": true,
+    "evidence_ids": ["FIN-001"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": false,
+    "expected_reason": "invalid_answer_structure"
+  }
+]
