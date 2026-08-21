@@ -18,6 +18,21 @@ AUTHORITATIVE_IDS = {"FIN-001", "FIN-002"}
 CLAIM_TEXT = "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
 SECOND_CLAIM_TEXT = "ต้องแนบใบเสร็จหรือเอกสารประกอบตามนโยบาย"
 CHAT_CLAIM_TEXT = "เพื่อนร่วมงานบอกว่าเบิกย้อนหลังได้ 60 วัน"
+# One claim carrying its own line break. The renderer appends citations at
+# the end of a claim, so this would show its first line uncited.
+MULTILINE_CLAIM_TEXT = (
+    "พนักงานต้องแนบใบเสร็จทุกครั้ง\nค่าแท็กซี่ล่วงเวลาเบิกได้ไม่เกิน 500 บาท"
+)
+# Citation markup the model may write in a shape the loader would never
+# emit. Each must still be rejected as markup, not mistaken for prose.
+LOWERCASE_MARKUP_TEXT = "ตามระเบียบ [fin-001] ต้องแนบใบเสร็จทุกครั้ง"
+ROUND_BRACKET_MARKUP_TEXT = "ตามระเบียบ (FIN-777) ต้องแนบใบเสร็จทุกครั้ง"
+FOUR_DIGIT_MARKUP_TEXT = "ตามระเบียบ [FIN-0012] ต้องแนบใบเสร็จทุกครั้ง"
+# Benign lookalikes paired with the rules above: ordinary punctuation and a
+# hyphenated product word must never be read as citation markup.
+BENIGN_PUNCTUATION_TEXT = (
+    "ยื่นภายใน 30 วัน (นับจากวันที่จ่าย) และใช้ e-receipt แทนใบเสร็จกระดาษได้"
+)
 
 
 def _answer(*claims: AnswerClaim, insufficient: bool = False) -> GroundedAnswer:
@@ -181,6 +196,52 @@ class TestStructureRejection(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "invalid_answer_structure")
+
+    def test_claim_containing_a_line_break_is_rejected(self) -> None:
+        # The renderer joins claims with "\n" and appends each claim's
+        # citations at its end, so a claim that breaks its own line would
+        # render a rule with no [SOURCE-ID] behind it.
+        result = _validate(
+            _answer(
+                AnswerClaim(
+                    text=MULTILINE_CLAIM_TEXT, source_ids=["FIN-001"]
+                )
+            )
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "invalid_answer_structure")
+
+    def test_citation_markup_near_misses_are_rejected(self) -> None:
+        # A model that writes the id in a shape the loader would never
+        # produce is still writing markup, and the employee reads it as a
+        # source id the validator never checked.
+        for text in (
+            LOWERCASE_MARKUP_TEXT,
+            ROUND_BRACKET_MARKUP_TEXT,
+            FOUR_DIGIT_MARKUP_TEXT,
+        ):
+            with self.subTest(text=text):
+                result = _validate(
+                    _answer(AnswerClaim(text=text, source_ids=["FIN-001"]))
+                )
+
+                self.assertFalse(result.ok)
+                self.assertEqual(result.reason, "invalid_answer_structure")
+
+    def test_ordinary_punctuation_is_not_citation_markup(self) -> None:
+        # Paired with the rule above: widening the markup pattern must not
+        # start refusing answers that merely use brackets or a hyphen.
+        result = _validate(
+            _answer(
+                AnswerClaim(
+                    text=BENIGN_PUNCTUATION_TEXT, source_ids=["FIN-001"]
+                )
+            )
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.citations, ("FIN-001",))
 
     def test_repeated_id_inside_one_claim_is_rejected(self) -> None:
         result = _validate(

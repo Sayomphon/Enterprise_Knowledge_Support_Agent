@@ -16,18 +16,25 @@ class ReasonCode(enum.StrEnum):
 
     The first six values mirror the enum in AGENTS.md section 8. The
     remaining values extend it, as that section instructs, instead of
-    inventing ad-hoc strings: three for requests rejected by
-    deterministic input validation before retrieval, one for a
-    reporter-boundary failure so that a provider outage still routes to
-    fallback with a stable code, three for the deterministic contracts
-    added by the remediation plan -- an unsupported topic, a supported
-    topic with no policy behind it, and a rewrite whose intent drifted
-    away from the original question -- two for the answer contract,
-    separating a structurally broken candidate from a reporter that
-    honestly reported its evidence as insufficient, and one for an LLM
-    route reached without configured credentials, which is a service
-    state and must never be reported to the employee as thin evidence
-    (remediation plan Finding 8).
+    inventing ad-hoc strings:
+
+        - three for requests rejected by deterministic input validation
+          before retrieval
+        - three for a stage that failed rather than decided: the reporter
+          boundary, the retriever, and the scope/evidence stage. Each has
+          its own code so a crash inside a stage degrades to a logged
+          fallback instead of escaping the graph, and so an operator can
+          tell a stage outage from an evidence verdict
+        - three for the deterministic contracts added by the remediation
+          plan: an unsupported topic, a supported topic with no policy
+          behind it, and a rewrite whose intent drifted away from the
+          original question
+        - two for the answer contract, separating a structurally broken
+          candidate from a reporter that honestly reported its evidence
+          as insufficient
+        - one for an LLM route reached without configured credentials,
+          which is a service state and must never be reported to the
+          employee as thin evidence (remediation plan Finding 8)
     """
 
     PROMPT_INJECTION = "prompt_injection"
@@ -40,6 +47,8 @@ class ReasonCode(enum.StrEnum):
     EMPTY_QUERY = "empty_query"
     QUERY_TOO_LONG = "query_too_long"
     REPORTER_FAILURE = "reporter_failure"
+    RETRIEVAL_FAILURE = "retrieval_failure"
+    EVIDENCE_FAILURE = "evidence_failure"
     UNSUPPORTED_TOPIC = "unsupported_topic"
     NO_AUTHORITATIVE_EVIDENCE = "no_authoritative_evidence"
     REWRITE_REJECTED = "rewrite_rejected"

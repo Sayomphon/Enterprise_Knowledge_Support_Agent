@@ -113,6 +113,40 @@ class TestLogWrite(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIsNotNone(result.error_type)
 
+    def test_unserialisable_query_reports_failure_without_raising(
+        self,
+    ) -> None:
+        # screen_query rejects a non-string, but the refusal path still
+        # hands it to this writer. json.dumps answers with TypeError, and
+        # a best-effort writer must absorb that like any filesystem error
+        # rather than let it kill the request.
+        result = self._append(query={"not": "serialisable"})
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_type, "TypeError")
+
+    def test_lone_surrogate_reports_failure_without_raising(self) -> None:
+        # Arrives from argv under surrogateescape; utf-8 cannot encode it.
+        result = self._append(query="taxi \ud800 claim")
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_type, "UnicodeEncodeError")
+
+    def test_oversized_query_is_truncated_and_marked(self) -> None:
+        # The sink is append-only with no rotation, and a query rejected
+        # for being too long is still logged, so the bound lives here.
+        self._append(query="ก" * 300_000)
+
+        logged = self._records()[0]["query"]
+        self.assertLess(len(logged), 2_000)
+        self.assertTrue(logged.endswith("...[truncated]"))
+
+    def test_query_within_the_bound_is_stored_verbatim(self) -> None:
+        result = self._append(query=QUERY)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(self._records()[0]["query"], QUERY)
+
     def test_failure_output_names_the_exception_type_only(self) -> None:
         blocker = self.directory / "occupied"
         blocker.write_text("occupied", encoding="utf-8")

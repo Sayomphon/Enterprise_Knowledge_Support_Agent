@@ -9,7 +9,8 @@ citation logic is duplicated here.
 Visual language follows the "Enterprise Logic" design system, whose
 single definition is the ``_DESIGN_SYSTEM_CSS`` block below: Enterprise
 Blue, Be Vietnam Pro with a Noto Sans Thai fallback for Thai glyphs,
-JetBrains Mono for machine data, tonal cards with subtle borders. Mockup elements without a real data source
+JetBrains Mono for machine data, tonal cards with subtle borders. Mockup
+elements without a real data source
 (24h KPIs, recent-session lists, human avatars, notification badges) are
 intentionally omitted, and score colours are bound to the calibrated
 runtime thresholds as the design system itself requires.
@@ -43,6 +44,8 @@ from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
+
+from langgraph.graph.state import CompiledStateGraph
 
 from src import config
 from src.fallback import ReasonCode, response_text_for_state
@@ -229,6 +232,19 @@ _ROUTE_BADGE_COLOURS: dict[str, str] = {
     "blocked": "red",
 }
 NEW_SESSION_LABEL = "New Session"
+
+# Detail line for a query the injection screen let through.
+GUARDRAIL_PASS_DETAIL = "pass · ไม่พบ pattern injection"
+
+# Reason codes the report node itself produces. Past them the request
+# never reached the citation validator, so the trace must not claim it
+# did; every other post-evidence reason comes from the validator.
+_REPORTER_FAILURE_REASONS = frozenset(
+    {
+        ReasonCode.LLM_NOT_CONFIGURED.value,
+        ReasonCode.REPORTER_FAILURE.value,
+    }
+)
 MISSING_KEY_WARNING = (
     "ยังไม่ได้ตั้งค่า OPENAI_API_KEY: คำถามที่ต้องเรียก LLM "
     "จะจบด้วยเหตุผล llm_not_configured และแสดงข้อความว่าบริการยังไม่พร้อม "
@@ -493,14 +509,6 @@ table.araya-table td *:not(.material-symbols-outlined) {
 .araya-kpi-head {
     display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
 }
-.araya-kpi-badge {
-    width: 32px; height: 32px; border-radius: 9999px; flex-shrink: 0;
-    display: inline-flex; align-items: center; justify-content: center;
-}
-.araya-kpi-badge--primary { background: #dae2ff; color: #003d9b; }
-.araya-kpi-badge--error { background: #ffdad6; color: #ba1a1a; }
-.araya-kpi-badge--secondary { background: #8af5be; color: #006c47; }
-.araya-kpi-badge--neutral { background: #edeef0; color: #434654; }
 .araya-kpi-label {
     font-size: 12px; font-weight: 700; letter-spacing: 0.05em;
     text-transform: uppercase; color: #434654;
@@ -1050,7 +1058,9 @@ def _corpus() -> list[Document]:
 
 
 @st.cache_resource
-def _graph_and_retriever():
+def _graph_and_retriever() -> tuple[
+    CompiledStateGraph, LocalTfidfRetriever, datetime
+]:
     """Build the TF-IDF index and compile the graph once per process.
 
     Streamlit reruns the script on every interaction; caching keeps the
@@ -1059,7 +1069,11 @@ def _graph_and_retriever():
     """
     retriever = LocalTfidfRetriever(_corpus())
     built_at = datetime.now().astimezone()
-    return build_graph(retriever=retriever), retriever, built_at
+    return (
+        build_graph(retriever=retriever, documents=_corpus()),
+        retriever,
+        built_at,
+    )
 
 
 def _invoke_graph(query: str) -> tuple[PipelineState, float]:
@@ -1558,39 +1572,37 @@ def _render_employee_view() -> None:
         _ask(query.strip())
 
 
-def _kpi_html(
-    label: str,
-    value: str,
-    unit: str = "",
-    icon: str = "",
-    tone: str = "neutral",
-) -> str:
+def _kpi_html(label: str, value: str, unit: str = "") -> str:
     """Render one KPI card in the console's stat style.
+
+    Every field is escaped. The card is emitted into an
+    ``unsafe_allow_html=True`` block, and its neighbour
+    ``_stat_card_html`` already escapes -- so the next caller that feeds
+    this one corpus-derived or query-derived text would have injected raw
+    markup where the identical text through the other helper is safe.
+
+    The ``icon``/``tone`` badge parameters are gone with the badge: the
+    single call site passes neither, so the branch and its five CSS rules
+    were unreachable.
 
     Args:
         label: Caps label describing the metric and its scope.
         value: Already-formatted metric value.
         unit: Optional unit or qualifier rendered next to the value.
-        icon: Material Symbols glyph for the tinted badge; omit for the
-            plain stat strips that the mockup renders without icons.
-        tone: Badge tint token: ``primary``, ``error``, ``secondary`` or
-            ``neutral``.
 
     Returns:
         The card markup.
     """
-    unit_html = f'<span class="araya-kpi-unit">{unit}</span>' if unit else ""
-    badge_html = (
-        f'<span class="araya-kpi-badge araya-kpi-badge--{tone}">'
-        f'<span class="material-symbols-outlined">{icon}</span></span>'
-        if icon
+    unit_html = (
+        f'<span class="araya-kpi-unit">{html.escape(unit)}</span>'
+        if unit
         else ""
     )
     return (
         '<div class="araya-kpi"><div class="araya-kpi-head">'
-        f'{badge_html}<span class="araya-kpi-label">{label}</span></div>'
-        f'<div class="araya-kpi-body"><span class="araya-kpi-value">{value}'
-        f"</span>{unit_html}</div></div>"
+        f'<span class="araya-kpi-label">{html.escape(label)}</span></div>'
+        f'<div class="araya-kpi-body"><span class="araya-kpi-value">'
+        f"{html.escape(value)}</span>{unit_html}</div></div>"
     )
 
 
@@ -1955,10 +1967,24 @@ def _trace_rows(state: PipelineState) -> list[tuple[str, str, str, str]]:
             *(
                 ("stop", "shield", f"blocked · {state.get('guardrail_reason')}")
                 if blocked
-                else ("done", "check", "pass · ไม่พบ pattern injection")
+                else ("done", "check", GUARDRAIL_PASS_DETAIL)
             ),
         )
     ]
+    # A blocked request traverses input_guardrail -> refuse -> END. The
+    # node that writes its telemetry had no row at all, and the fallback
+    # row below claimed the write instead.
+    rows.append(
+        (
+            "refuse",
+            "done",
+            "block",
+            f"telemetry_logged="
+            f"{str(state.get('telemetry_logged', True)).lower()}",
+        )
+        if blocked
+        else ("refuse", *skipped)
+    )
     rows.append(
         ("retrieve_original", *skipped)
         if raw is None
@@ -2001,7 +2027,11 @@ def _trace_rows(state: PipelineState) -> list[tuple[str, str, str, str]]:
                 "llm",
                 "edit_note",
                 f"LLM call · {len(rewrites)} queries"
-                + (" · rewrite_failed" if state.get("rewrite_failed") else "")
+                + (
+                    f" · {state['rewrite_failure_reason']}"
+                    if state.get("rewrite_failure_reason")
+                    else ""
+                )
                 + (
                     " · rewrite_rejected"
                     if state.get("rewrite_rejected")
@@ -2030,28 +2060,47 @@ def _trace_rows(state: PipelineState) -> list[tuple[str, str, str, str]]:
             " · ".join(document.source_id for document in evidence),
         )
     )
-    answered = route == "answered"
+    # The reporter ran whenever evidence selection handed it evidence.
+    # Gating this row on route == "answered" hid a billed LLM call on
+    # exactly the routes an auditor opens the panel for: every reason
+    # code after the reporter (fabricated_citation, reporter_failure,
+    # insufficient_reporter_evidence, ...) showed "was not called".
+    # select_evidence writes answer_evidence only when it succeeded, and
+    # the graph always follows that with the report node, so the presence
+    # of evidence is exactly the condition "the reporter ran".
+    reporter_ran = bool(evidence)
     rows.append(
         (
             "report",
             "llm",
             "smart_toy",
-            "LLM call · grounded answer",
+            "LLM call · grounded answer"
+            if route == "answered"
+            else f"LLM call · {state.get('fallback_reason')}",
         )
-        if answered
+        if reporter_ran
         else ("report", *skipped)
     )
+    # Likewise: the validator is the node that REJECTED the answer on the
+    # contract routes, so an empty citation list is not evidence that it
+    # never ran.
+    validator_ran = reporter_ran and state.get(
+        "fallback_reason"
+    ) not in _REPORTER_FAILURE_REASONS
     rows.append(
         (
             "validate_citations",
-            "done",
-            "verified",
-            f"valid · {', '.join(citations)}",
+            "done" if citations else "stop",
+            "verified" if citations else "block",
+            f"valid · {', '.join(citations)}"
+            if citations
+            else f"rejected · {state.get('fallback_reason')}",
         )
-        if citations
+        if validator_ran
         else ("validate_citations", *skipped)
     )
-    degraded = route in {"fallback", "blocked"}
+    # A blocked request is accounted for by the refuse row above.
+    degraded = route == "fallback"
     rows.append(
         (
             "fallback",
@@ -2090,8 +2139,8 @@ def _render_trace_panel(record: dict) -> None:
                 '<div class="araya-trace-aside">'
                 f"<span>เดิม “{html.escape(record['query'])}”</span>"
                 f"<span>→ {html.escape(' · '.join(rewrites))}</span>"
-                f"<span>rewrite_failed = "
-                f"{str(state.get('rewrite_failed', False)).lower()}"
+                f"<span>rewrite_failure_reason = "
+                f"{html.escape(str(state.get('rewrite_failure_reason')))}"
                 f" · rewrite_rejected = "
                 f"{str(state.get('rewrite_rejected', False)).lower()}</span>"
                 "</div>"

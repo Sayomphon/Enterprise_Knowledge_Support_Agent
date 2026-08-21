@@ -6,13 +6,16 @@ named high-precision prompt-injection rules in English and Thai.
 
 Two representations of the query exist here on purpose. The pipeline
 receives ``normalized_query``, NFC-normalized user text that retrieval
-and the rewriter can work with. The rules match ``guardrail_match_text``
-instead: a hardened folding that removes zero-width characters, turns
-separator punctuation into spaces, and case-folds, so that
-``Ig<ZWSP>nore`` and ``ignore.previous.instructions`` cannot slip past a
-pattern that the plain wording would hit. The hardened form is never
-returned to the pipeline, because NFKC rewrites compatibility characters
-that Thai corpus text may rely on.
+and the rewriter can work with. The rules match the hardened foldings
+from ``guardrail_match_variants`` instead: NFKC, case folding, separator
+punctuation turned into spaces, and zero-width characters handled BOTH
+ways -- deleted in one folding and spaced in the other -- because an
+attacker chooses where to hide them and neither treatment covers both
+placements. A rule fires if either folding hits, so ``Ig<ZWSP>nore``,
+``ignore<ZWSP>previous`` and ``ignore.previous.instructions`` all reach
+the pattern that the plain wording would hit. The hardened forms are
+never returned to the pipeline, because NFKC rewrites compatibility
+characters that Thai corpus text may rely on.
 
 Precision is deliberately favoured over recall: blocking a benign
 enterprise question costs more here than letting a novel attack phrasing
@@ -25,6 +28,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -40,8 +44,13 @@ GuardrailReason = Literal[
     "prompt_injection",
 ]
 
-# Invisible format characters an attacker can drop inside a keyword to
-# break a pattern without changing what the employee's screen shows.
+# Invisible format characters an attacker can drop into a query to break a
+# pattern without changing what the employee's screen shows. They admit two
+# placements and no single folding covers both: DELETING one rejoins
+# "ig<ZWSP>nore" but glues "ignore<ZWSP>previous" into a single token that
+# no longer offers the whitespace gap every English rule requires, while
+# folding it to a space does exactly the reverse. Both foldings are built,
+# and a rule matches if either one hits.
 _FORMAT_CHARACTERS = "​‌‍⁠﻿­"
 
 # Punctuation an attacker can use as a word separator. Folding it to a
@@ -61,6 +70,13 @@ _THAI_DECOMPOSED_SARA_AM = "\u0e4d\u0e32"
 _MATCH_TRANSLATION = {
     **{ord(character): None for character in _FORMAT_CHARACTERS},
     **{ord(character): " " for character in _SEPARATOR_CHARACTERS},
+}
+# The same table with format characters folded to a space instead. Neither
+# folding covers both placements on its own, so rules are matched against
+# both (see ``guardrail_match_variants``).
+_SPACED_MATCH_TRANSLATION = {
+    ord(character): " "
+    for character in _FORMAT_CHARACTERS + _SEPARATOR_CHARACTERS
 }
 
 
@@ -87,13 +103,19 @@ class InjectionRule:
 # IGNORECASE is kept so a future rule written with capitals still works.
 INJECTION_RULES: tuple[InjectionRule, ...] = (
     InjectionRule(
-        # English "ignore/disregard/forget (all) previous instructions",
-        # with the synonyms an attacker reaches for once "instructions"
-        # is blocked. "policy" is deliberately absent: it is the domain
-        # noun of this corpus, so blocking it would refuse real questions.
+        # English "ignore/disregard/forget (all|the|your) previous
+        # instructions", with the synonyms an attacker reaches for once
+        # "instructions" is blocked. The determiner slot repeats up to
+        # twice, bounded, so "all of the previous instructions" is covered
+        # without the unbounded repetition this module forbids: the
+        # article is the single most common word in this attack and its
+        # absence made the flagship rule miss the canonical phrasing.
+        # "policy" is deliberately absent: it is the domain noun of this
+        # corpus, so blocking it would refuse real questions.
         rule_id="english_ignore_previous_instructions",
         pattern=re.compile(
-            r"(?:ignore|disregard|forget|skip)\s{1,5}(?:all\s{1,5}|any\s{1,5})?"
+            r"(?:ignore|disregard|forget|skip)\s{1,5}"
+            r"(?:(?:all|any|the|your|these|those)(?:\s{1,5}of)?\s{1,5}){0,2}"
             r"(?:previous|prior|earlier|above|system|these|your)\s{1,5}"
             r"(?:instructions?|rules?|directions?|prompts?|guidelines?)",
             re.IGNORECASE,
@@ -104,7 +126,8 @@ INJECTION_RULES: tuple[InjectionRule, ...] = (
         # to the developer-message wording of the same request.
         rule_id="english_reveal_system_prompt",
         pattern=re.compile(
-            r"(?:reveal|show|print|display|expose|disclose|repeat)\s{1,5}"
+            r"(?:reveal|show|print|display|expose|disclose|repeat"
+            r"|tell|output|give|state|share)\s{1,5}"
             r"(?:me\s{1,5})?(?:your\s{1,5}|the\s{1,5})?"
             r"(?:system|developer)\s{1,5}"
             r"(?:prompts?|messages?|instructions?)",
@@ -118,7 +141,8 @@ INJECTION_RULES: tuple[InjectionRule, ...] = (
         # expense-workflow wording and must keep passing.
         rule_id="english_reveal_hidden_prompt",
         pattern=re.compile(
-            r"(?:reveal|show|print|display|expose|disclose|repeat)\s{1,5}"
+            r"(?:reveal|show|print|display|expose|disclose|repeat"
+            r"|tell|output|give|state|share)\s{1,5}"
             r"(?:me\s{1,5})?(?:your\s{1,5}|the\s{1,5})?"
             r"(?:hidden|initial|original|internal|secret)\s{1,5}prompts?",
             re.IGNORECASE,
@@ -131,10 +155,32 @@ INJECTION_RULES: tuple[InjectionRule, ...] = (
         # document.
         rule_id="english_reveal_own_instructions",
         pattern=re.compile(
-            r"(?:reveal|show|print|display|expose|disclose|repeat)\s{1,5}"
+            r"(?:reveal|show|print|display|expose|disclose|repeat"
+            r"|tell|output|give|state|share)\s{1,5}"
             r"(?:me\s{1,5})?your\s{1,5}"
             r"(?:hidden|initial|original|internal|secret)\s{1,5}"
             r"instructions?",
+            re.IGNORECASE,
+        ),
+    ),
+    InjectionRule(
+        # English "what is your system prompt". The three rules above all
+        # key on an imperative verb, so the interrogative form of the same
+        # request slipped past every one of them. The noun is restricted
+        # to the assistant's own configuration -- an employee asks what
+        # the leave *policy* is, never what a *prompt* is.
+        rule_id="english_ask_for_system_prompt",
+        pattern=re.compile(
+            r"what(?:\s{1,5}(?:exactly|precisely))?\s{1,5}"
+            r"(?:is|are|was|were)\s{1,5}"
+            # "the system prompt" is fair game -- that phrase is not
+            # enterprise vocabulary. "the original instructions" is, so
+            # the second branch demands the possessive, exactly as
+            # english_reveal_own_instructions does.
+            r"(?:(?:your|the)\s{1,5}(?:system|developer)\s{1,5}"
+            r"(?:prompts?|messages?|instructions?)"
+            r"|your\s{1,5}(?:initial|original|hidden|secret|internal)"
+            r"\s{1,5}(?:prompts?|instructions?))",
             re.IGNORECASE,
         ),
     ),
@@ -164,7 +210,12 @@ INJECTION_RULES: tuple[InjectionRule, ...] = (
         rule_id="thai_forget_previous_instructions",
         pattern=re.compile(
             r"(?:ลืม|เพิกเฉย|ไม่ต้องสนใจ)[^\n]{0,10}"
-            r"(?:คำสั่ง(?!ซื้อ)|ข้อกำหนด)[^\n]{0,30}"
+            # 6, not 30: the attack writes the tail straight after the
+            # noun ("khamsang kon-na"), while "I forgot ALL the travel
+            # expense rules" needs a 15-character business noun phrase in
+            # between. The wide gap was letting that declarative sentence
+            # match, which is a refusal of a real question.
+            r"(?:คำสั่ง(?!ซื้อ)|ข้อกำหนด)[^\n]{0,6}"
             r"(?:ก่อนหน้า|ทั้งหมด|ระบบ)"
         ),
     ),
@@ -177,7 +228,7 @@ INJECTION_RULES: tuple[InjectionRule, ...] = (
         rule_id="thai_reveal_system_prompt",
         pattern=re.compile(
             r"(?:เปิดเผย|แสดง|บอก|ขอดู)[^\n]{0,10}"
-            r"(?:system\s{0,3}prompt|คำสั่งระบบ|พรอมป์ต์ระบบ|พรอมต์ระบบ"
+            r"(?:system\s{0,3}prompt|คำสั่งระบบ(?!การ)|พรอมป์ต์ระบบ|พรอมต์ระบบ"
             r"|คำสั่งตั้งต้น|พรอมต์ที่ซ่อนอยู่)",
             re.IGNORECASE,
         ),
@@ -198,16 +249,24 @@ INJECTION_RULES: tuple[InjectionRule, ...] = (
         # shape that hides behind a valid HR question.
         rule_id="thai_replace_system_rules",
         pattern=re.compile(
-            r"ใช้[^\n]{0,10}(?:คำสั่ง(?!ซื้อ)|กฎ|ข้อกำหนด)[^\n]{0,15}แทน"
+            # "instead of" must name the system. Without that anchor the
+            # rule also matched "can I use the sick-leave rule instead",
+            # which is an ordinary HR question.
+            r"ใช้[^\n]{0,10}(?:คำสั่ง(?!ซื้อ)|กฎ|ข้อกำหนด)[^\n]{0,8}"
+            r"แทน[^\n]{0,10}ระบบ"
         ),
     ),
     InjectionRule(
         # Thai "cancel / do not follow the existing system rules".
         rule_id="thai_cancel_existing_rules",
         pattern=re.compile(
+            # The tail must reach "rabop" (system): "cancel the OLD rule"
+            # alone is what an employee asks about a leave policy, and
+            # gap tuning cannot separate the two -- both write the tail
+            # immediately after the noun.
             r"(?:ยกเลิก|ไม่ต้องทำตาม|ห้ามทำตาม)[^\n]{0,10}"
-            r"(?:คำสั่ง(?!ซื้อ)|กฎ|ข้อกำหนด)[^\n]{0,15}"
-            r"(?:เดิม|ระบบ|ก่อนหน้า|ทั้งหมด)"
+            r"(?:คำสั่ง(?!ซื้อ)|กฎ|ข้อกำหนด)"
+            r"(?:เดิม|ก่อนหน้า|ทั้งหมด)?[^\n]{0,6}ระบบ"
         ),
     ),
     InjectionRule(
@@ -254,10 +313,35 @@ def guardrail_match_text(query: str) -> str:
         because NFKC rewrites compatibility characters that the Thai
         corpus and its queries may depend on.
     """
+    return _fold(query, _MATCH_TRANSLATION)
+
+
+def guardrail_match_variants(query: str) -> tuple[str, str]:
+    """Return both hardened foldings every rule must be matched against.
+
+    Args:
+        query: NFC-normalized query text.
+
+    Returns:
+        The folding that deletes format characters and the folding that
+        turns them into spaces, in that order. Matching both closes an
+        attacker's choice of where to hide the invisible character; it
+        costs one extra pass over a string already bounded by
+        ``MAX_QUERY_CHARS``, and the two are identical whenever the query
+        contains no format character at all.
+    """
+    return (
+        _fold(query, _MATCH_TRANSLATION),
+        _fold(query, _SPACED_MATCH_TRANSLATION),
+    )
+
+
+def _fold(query: str, translation: Mapping[int, str | None]) -> str:
+    """Apply one hardening table to a query."""
     folded = unicodedata.normalize("NFKC", query).replace(
         _THAI_DECOMPOSED_SARA_AM, _THAI_SARA_AM
     )
-    folded = folded.translate(_MATCH_TRANSLATION)
+    folded = folded.translate(translation)
     return " ".join(folded.casefold().split())
 
 
@@ -320,8 +404,8 @@ def matched_rule(query: str) -> str | None:
         The ``rule_id`` of the first matching rule, or ``None`` when the
         query matches no rule.
     """
-    match_text = guardrail_match_text(query)
+    match_texts = guardrail_match_variants(query)
     for rule in INJECTION_RULES:
-        if rule.pattern.search(match_text):
+        if any(rule.pattern.search(text) for text in match_texts):
             return rule.rule_id
     return None

@@ -152,7 +152,15 @@ def _is_acceptable(
         # A number the employee never wrote is a changed question, not a
         # cleaned one -- 500 baht must not become 5,000.
         return False
-    candidate_topics = set(validate_scope(candidate).topics)
-    if not candidate_topics <= allowed_topics:
+    candidate_scope = validate_scope(candidate)
+    if not candidate_scope.supported:
+        # An unsupported candidate resolves to an EMPTY topic set, and the
+        # subset test below would accept it vacuously. That empty set is
+        # exactly what the scope gate returns for the topics the corpus has
+        # no policy for, so without this check a rewrite may swap the leave
+        # type -- sick leave for maternity leave -- which AGENTS.md
+        # section 4, invariant 7 forbids by name.
+        return False
+    if not set(candidate_scope.topics) <= allowed_topics:
         return False
     return overlap(original_query, candidate) >= threshold

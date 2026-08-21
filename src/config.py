@@ -103,6 +103,19 @@ TEMPERATURE: float = _env_float("TEMPERATURE", "0")
 # and the SDK retries only transient provider errors.
 LLM_TIMEOUT_SECONDS: float = _env_float("LLM_TIMEOUT_SECONDS", "30")
 LLM_MAX_RETRIES: int = _env_int("LLM_MAX_RETRIES", "2")
+# The rewrite boundary gets its own, tighter budget. The two LLM calls of
+# a medium-band request are sequential and ``graph.invoke`` is
+# synchronous, so their budgets add up in front of the employee: at the
+# shared 30s x 3 attempts they reach 180 seconds of frozen UI before the
+# fallback text appears. The rewrite is the optional half of that -- it
+# improves recall, it does not produce the answer -- so it is the half
+# that is cut. Worst case becomes 10s x 2 + 30s x 3 = 110s. That is still
+# a long wait; a per-request deadline shared across both boundaries is
+# the real fix and is not implemented here.
+LLM_REWRITE_TIMEOUT_SECONDS: float = _env_float(
+    "LLM_REWRITE_TIMEOUT_SECONDS", "10"
+)
+LLM_REWRITE_MAX_RETRIES: int = _env_int("LLM_REWRITE_MAX_RETRIES", "1")
 
 # Calibrated 2026-08-20 against eval/retrieval_calibration.json with the
 # character (2,5) TF-IDF configuration; the (2,4)/(2,5)/(3,5) ablation all
@@ -219,6 +232,13 @@ if REWRITE_FLOOR > DIRECT_ANSWER_THRESHOLD:
         "REWRITE_FLOOR must not exceed DIRECT_ANSWER_THRESHOLD; the medium "
         "band would otherwise be empty and no query could ever be rewritten"
     )
+if FINAL_ANSWER_THRESHOLD < DIRECT_ANSWER_THRESHOLD:
+    raise ValueError(
+        "FINAL_ANSWER_THRESHOLD must not sit below DIRECT_ANSWER_THRESHOLD; "
+        "the expanded score is max-pooled over the original query plus its "
+        "rewrites, so a lower final gate would let the rewrite branch answer "
+        "queries the direct branch already refused on the same score"
+    )
 if TOP_K <= 0:
     raise ValueError("TOP_K must be greater than zero")
 if MAX_QUERY_CHARS <= 0:
@@ -227,3 +247,7 @@ if LLM_TIMEOUT_SECONDS <= 0:
     raise ValueError("LLM_TIMEOUT_SECONDS must be greater than zero")
 if LLM_MAX_RETRIES < 0:
     raise ValueError("LLM_MAX_RETRIES must not be negative")
+if LLM_REWRITE_TIMEOUT_SECONDS <= 0:
+    raise ValueError("LLM_REWRITE_TIMEOUT_SECONDS must be greater than zero")
+if LLM_REWRITE_MAX_RETRIES < 0:
+    raise ValueError("LLM_REWRITE_MAX_RETRIES must not be negative")

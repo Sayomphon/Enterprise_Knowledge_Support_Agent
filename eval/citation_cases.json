@@ -193,5 +193,74 @@
     "authoritative_ids": ["FIN-001"],
     "expected_valid": false,
     "expected_reason": "invalid_answer_structure"
+  },
+  {
+    "id": "cit_claim_with_line_break",
+    "claims": [
+      {
+        "text": "พนักงานต้องแนบใบเสร็จทุกครั้ง\nค่าแท็กซี่ล่วงเวลาเบิกได้ไม่เกิน 500 บาท",
+        "source_ids": ["FIN-001"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001", "FIN-002"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": false,
+    "expected_reason": "invalid_answer_structure"
+  },
+  {
+    "id": "cit_lowercase_citation_markup",
+    "claims": [
+      {
+        "text": "ตามระเบียบ [fin-001] ต้องแนบใบเสร็จทุกครั้ง",
+        "source_ids": ["FIN-001"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001", "FIN-002"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": false,
+    "expected_reason": "invalid_answer_structure"
+  },
+  {
+    "id": "cit_round_bracket_citation_markup",
+    "claims": [
+      {
+        "text": "ตามระเบียบ (FIN-777) ต้องแนบใบเสร็จทุกครั้ง",
+        "source_ids": ["FIN-001"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001", "FIN-002"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": false,
+    "expected_reason": "invalid_answer_structure"
+  },
+  {
+    "id": "cit_four_digit_citation_markup",
+    "claims": [
+      {
+        "text": "ตามระเบียบ [FIN-0012] ต้องแนบใบเสร็จทุกครั้ง",
+        "source_ids": ["FIN-001"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001", "FIN-002"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": false,
+    "expected_reason": "invalid_answer_structure"
+  },
+  {
+    "id": "cit_benign_parenthetical_and_hyphen",
+    "claims": [
+      {
+        "text": "ยื่นภายใน 30 วัน (นับจากวันที่จ่าย) และใช้ e-receipt แทนใบเสร็จกระดาษได้",
+        "source_ids": ["FIN-001"]
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": ["FIN-001", "FIN-002"],
+    "authoritative_ids": ["FIN-001"],
+    "expected_valid": true
   }
 ]

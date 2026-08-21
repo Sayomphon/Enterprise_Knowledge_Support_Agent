@@ -165,6 +165,23 @@ class TestImportTimeValidation(unittest.TestCase):
             "REWRITE_FLOOR must not exceed",
         )
 
+    def test_final_threshold_below_direct_threshold_is_rejected(
+        self,
+    ) -> None:
+        # The expanded score is max-pooled over the original query plus
+        # its rewrites, so it is never below the raw score. A final gate
+        # under the direct gate would therefore let the rewrite branch
+        # answer a query the direct branch already refused on the very
+        # same number -- and the graph relies on the opposite to skip an
+        # expansion that cannot change the verdict.
+        self._reload_expecting_error(
+            {
+                "DIRECT_ANSWER_THRESHOLD": "0.30",
+                "FINAL_ANSWER_THRESHOLD": "0.20",
+            },
+            "FINAL_ANSWER_THRESHOLD must not sit below",
+        )
+
     def test_non_positive_top_k_is_rejected(self) -> None:
         self._reload_expecting_error({"TOP_K": "0"}, "TOP_K")
 

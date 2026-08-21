@@ -26,9 +26,15 @@ from collections.abc import Collection
 
 from src.schemas import AnswerClaim, GroundedAnswer, ValidationResult
 
-# Must agree with the source_id grammar enforced by the corpus loader, so
-# every loadable document is citable and every citable id is loadable.
-CITATION_PATTERN = re.compile(r"\[([A-Z]{2,5}-\d{3})\]")
+# Deliberately wider than the loader's source_id grammar. This pattern does
+# not decide what is citable; it detects text that *poses* as a citation, so
+# it must also catch the near-misses a model produces -- a different case, a
+# fourth digit, round brackets, padding spaces. Matching only the exact
+# loadable shape would let "[hr-001]" and "(HR-777)" through to the employee
+# as unvalidated source ids. A false positive here costs an answer (the
+# request degrades to fallback); a false negative costs the grounding
+# guarantee, so the pattern errs wide.
+CITATION_PATTERN = re.compile(r"[\[(]\s*[A-Za-z]{2,5}\s*-\s*\d{1,5}\s*[\])]")
 
 
 def validate_answer(
@@ -52,8 +58,9 @@ def validate_answer(
         reason of the first rule that failed:
         ``"insufficient_reporter_evidence"`` (the model declared the
         evidence insufficient), ``"invalid_answer_structure"`` (no
-        claims, blank claim, self-contradicting flag, repeated id, or
-        model-written citation markup), ``"missing_citation"`` (a claim
+        claims, blank claim, a line break inside a claim,
+        self-contradicting flag, repeated id, or model-written citation
+        markup), ``"missing_citation"`` (a claim
         with no source), ``"fabricated_citation"`` (an id outside this
         request's evidence), or ``"no_authoritative_evidence"`` (a claim
         resting on chat alone).
@@ -102,6 +109,13 @@ def _claim_rejection_reason(
         claim is acceptable.
     """
     if not claim.text.strip():
+        return "invalid_answer_structure"
+    if "\n" in claim.text or "\r" in claim.text:
+        # The renderer emits one line per claim and appends that claim's
+        # citations at the end of it, so a claim carrying its own line
+        # break would render leading lines that state a rule and carry no
+        # citation at all -- uncited output in the public answer, which
+        # AGENTS.md section 4 forbids.
         return "invalid_answer_structure"
     if CITATION_PATTERN.search(claim.text):
         # Citations are rendered from validated ids, so markup inside the

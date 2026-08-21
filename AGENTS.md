@@ -401,9 +401,29 @@ Reason codes (extend the enum, never invent ad-hoc strings):
 `prompt_injection`, `low_retrieval_score`, `rewrite_low_retrieval_score`,
 `missing_citation`, `fabricated_citation`, `rewrite_failure`,
 `invalid_query_type`, `empty_query`, `query_too_long`, `reporter_failure`,
+`retrieval_failure`, `evidence_failure`,
 `unsupported_topic`, `no_authoritative_evidence`, `rewrite_rejected`,
 `invalid_answer_structure`, `insufficient_reporter_evidence`,
 `llm_not_configured`.
+
+`rewrite_failure` and `llm_not_configured` are what the fallback node records
+when the rewriter produced nothing: the medium band exists because the original
+score is inconclusive, so a rewrite that never ran has not shown the corpus to
+be thin and must not be logged as a low expanded score. `rewrite_rejected`
+stays separate again — there the rewriter worked and the validator refused its
+output.
+
+`retrieval_failure` and `evidence_failure` mark a stage that *crashed* rather
+than decided. The deterministic nodes have no provider behind them, so an
+exception there is an index, corpus, or programming fault -- but it must still
+leave a reason code, because an exception escaping `invoke` leaves none and
+invariant 9 would be violated by a request nobody can account for. Only the
+exception type reaches stderr; the message may name a filesystem path.
+
+The query field is capped before it is written. A request rejected *for being
+too long* is still logged, and `MAX_QUERY_CHARS` bounds what the pipeline
+processes, not what reaches an append-only file with no rotation; an oversized
+value is truncated and marked as truncated.
 
 Only executed rewrites are logged: candidates the validator rejected are model
 output about the user's question and never enter the JSONL record. The same

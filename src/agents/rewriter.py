@@ -19,7 +19,8 @@ import sys
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from src.agents import get_llm
+from src.agents import MissingLlmCredentialError, get_rewrite_llm
+from src.fallback import ReasonCode
 
 MAX_REWRITTEN_QUERIES = 3
 
@@ -55,22 +56,30 @@ class RewriteResult(BaseModel):
     )
 
 
-def safe_rewrite(query: str) -> tuple[list[str], bool]:
+def safe_rewrite(query: str) -> tuple[list[str], str | None]:
     """Propose cleaned search variants for one medium-band query.
 
     Args:
         query: The guardrail-normalized original user query.
 
     Returns:
-        A ``(candidate_queries, rewrite_failed)`` pair. The candidates are
+        A ``(candidate_queries, failure_reason)`` pair. The candidates are
         unvalidated model output: the caller must run them through
         ``validate_rewrites`` before retrieval. On any failure the list is
-        empty and the flag is True; the caller then retrieves with the
-        original query only, so a provider outage degrades quality but
-        never breaks the request (AGENTS.md section 4, invariant 8).
+        empty and the reason names the cause; the caller then degrades
+        rather than breaking the request (AGENTS.md section 4,
+        invariant 8).
+
+        The reason is a code, not a boolean, because the two failures are
+        different facts about the deployment. A missing credential is a
+        service state the employee must be told about; a provider error
+        is an outage an operator must be able to find in the log. The
+        previous boolean collapsed both into "the corpus lacked an
+        answer", which is the misattribution remediation Finding 8 exists
+        to remove.
     """
     try:
-        structured_llm = get_llm().with_structured_output(
+        structured_llm = get_rewrite_llm().with_structured_output(
             RewriteResult, method="json_schema"
         )
         result = structured_llm.invoke(
@@ -79,22 +88,26 @@ def safe_rewrite(query: str) -> tuple[list[str], bool]:
                 HumanMessage(content=query),
             ]
         )
-        return _candidate_queries(result), False
-    # Deliberately broad: this seam absorbs provider errors, timeouts,
-    # malformed structured output, and a missing credential alike, because
-    # surviving the request with original-query retrieval outranks
-    # diagnosing the exact failure here. A rewrite is an optional quality
-    # step, so an unconfigured service costs recall, not the request; the
-    # reporter downstream is where a missing credential becomes a reason
-    # code. Only the exception type is recorded -- exception messages can
-    # carry provider payloads or prompt fragments and must not leak.
+        return _candidate_queries(result), None
+    # Separated from the broad handler below for the same reason the
+    # reporter separates it: an unconfigured service is an operator
+    # problem, and reporting it as thin evidence sends the employee after
+    # a policy that was never consulted (remediation plan Finding 8).
+    except MissingLlmCredentialError:
+        return [], ReasonCode.LLM_NOT_CONFIGURED.value
+    # Deliberately broad: this seam absorbs provider errors, timeouts and
+    # malformed structured output alike, because surviving the request
+    # outranks diagnosing the exact failure here. A rewrite is an optional
+    # quality step, so an outage costs recall, not the request. Only the
+    # exception type is recorded -- exception messages can carry provider
+    # payloads or prompt fragments and must not leak.
     except Exception as exc:
         print(
             "safe_rewrite: degraded to original-query retrieval after "
             f"{type(exc).__name__}",
             file=sys.stderr,
         )
-        return [], True
+        return [], ReasonCode.REWRITE_FAILURE.value
 
 
 def _candidate_queries(result: RewriteResult) -> list[str]:

@@ -21,8 +21,9 @@ so the response text can stay truthful (Finding 7).
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -42,7 +43,23 @@ from src.ingestion.loader import load_documents
 from src.logging_utils import log_fallback_event
 from src.retrievers.base import Retriever
 from src.retrievers.local_tfidf import LocalTfidfRetriever
-from src.schemas import Document, PipelineState
+from src.schemas import Document, GroundedAnswer, PipelineState, RetrievedDocument
+
+
+class Rewriter(Protocol):
+    """The rewrite seam: a query in, candidates and a failure flag out."""
+
+    def __call__(self, query: str) -> tuple[list[str], str | None]:
+        """Propose search variants for one medium-band query."""
+
+
+class Reporter(Protocol):
+    """The generation seam: a query and its evidence in, a draft out."""
+
+    def __call__(
+        self, query: str, retrieved: Sequence[RetrievedDocument]
+    ) -> GroundedAnswer:
+        """Draft an unvalidated candidate answer from the evidence."""
 
 
 def route_after_guardrail(
@@ -130,6 +147,27 @@ def route_after_scope(
     return "fallback" if band == "low" else band
 
 
+def route_after_rewrite(
+    state: PipelineState,
+) -> Literal["expand", "fallback"]:
+    """Skip expanded retrieval when no rewrite survived validation.
+
+    With no accepted rewrite the expanded search is byte-identical to the
+    original one, so its score equals ``raw_retrieval_score`` -- which is
+    below ``DIRECT_ANSWER_THRESHOLD`` by definition of the medium band,
+    and ``config`` requires ``FINAL_ANSWER_THRESHOLD`` not to sit below
+    that. The verdict is therefore already decided, and running the
+    search again would only pay for it.
+
+    Args:
+        state: Pipeline state after the rewrite node ran.
+
+    Returns:
+        The branch key consumed by the LangGraph conditional edge.
+    """
+    return "expand" if state.get("rewritten_queries") else "fallback"
+
+
 def route_after_evidence_selection(
     state: PipelineState,
 ) -> Literal["report", "fallback"]:
@@ -182,10 +220,38 @@ def _top_source_ids(state: PipelineState) -> list[str]:
     ]
 
 
+def _degraded(node_name: str, exc: Exception, reason: ReasonCode) -> dict[str, object]:
+    """Turn a crash inside a deterministic node into a fallback reason.
+
+    The deterministic stages have no provider behind them, so an exception
+    here is an index, corpus, or programming fault rather than a verdict.
+    It still must not escape the graph: AGENTS.md section 4, invariant 9
+    requires every degraded request to leave a reason code in the log, and
+    an exception leaves none. Only the exception type is recorded, matching
+    the LLM boundaries -- a message can carry a filesystem path or a
+    fragment of corpus text.
+
+    Args:
+        node_name: Node that failed, for the stderr diagnostic.
+        exc: The caught exception; only its type is reported.
+        reason: Stable reason code for this stage.
+
+    Returns:
+        The state update that routes the request to the fallback node.
+    """
+    print(
+        f"{node_name}: degraded to fallback after {type(exc).__name__}",
+        file=sys.stderr,
+    )
+    return {"fallback_reason": reason.value}
+
+
 def build_graph(
     retriever: Retriever | None = None,
     log_path: str | Path | None = None,
     documents: list[Document] | None = None,
+    rewriter: Rewriter | None = None,
+    reporter: Reporter | None = None,
 ) -> CompiledStateGraph:
     """Compile the support pipeline with injectable dependencies.
 
@@ -200,10 +266,20 @@ def build_graph(
             validated corpus. Evidence selection needs the whole corpus,
             not only the retrieved candidates, because a canonical policy
             may sit outside the top-k.
+        rewriter: Rewrite seam; defaults to the LLM-backed
+            ``safe_rewrite``. The evaluation harness injects a
+            cache-backed stub so it can measure THIS graph rather than a
+            second copy of its routing.
+        reporter: Generation seam; defaults to the LLM-backed
+            ``generate_answer``. Injected for the same reason: the two
+            LLM seams are the only thing that stopped the harness from
+            invoking the real pipeline offline.
 
     Returns:
         The compiled state graph, ready for ``invoke``.
     """
+    rewrite = rewriter if rewriter is not None else safe_rewrite
+    report = reporter if reporter is not None else generate_answer
     if documents is None:
         documents = load_documents()
     if retriever is None:
@@ -214,7 +290,16 @@ def build_graph(
         """Screen the raw query deterministically before any other work."""
         result = screen_query(state["query"])
         if not result.ok:
-            return {"route": "blocked", "guardrail_reason": result.reason}
+            # The normalized form travels on the blocked branch too. It is
+            # what the refusal node logs, so the sink records stripped text
+            # bounded by MAX_QUERY_CHARS rather than the raw payload -- and
+            # a non-string input becomes the empty string here instead of
+            # reaching ``json.dumps`` intact.
+            return {
+                "route": "blocked",
+                "guardrail_reason": result.reason,
+                "query": result.normalized_query,
+            }
         # Every later stage sees only the normalized form of the query.
         return {"query": result.normalized_query}
 
@@ -233,7 +318,21 @@ def build_graph(
 
     def retrieve_original_node(state: PipelineState) -> dict[str, object]:
         """Retrieve with the original query and record the top-1 score."""
-        results = retriever.search([state["query"]], config.TOP_K)
+        try:
+            results = retriever.search([state["query"]], config.TOP_K)
+        except Exception as exc:
+            # The empty candidate list and zero score are not a verdict;
+            # they exist so the routers downstream have the keys they read
+            # before the explicit reason sends the request to fallback.
+            return {
+                "retrieved_candidates": [],
+                "raw_retrieval_score": 0.0,
+                **_degraded(
+                    "retrieve_original_node",
+                    exc,
+                    ReasonCode.RETRIEVAL_FAILURE,
+                ),
+            }
         top_score = results[0].score if results else 0.0
         return {
             "retrieved_candidates": results,
@@ -242,7 +341,17 @@ def build_graph(
 
     def validate_scope_node(state: PipelineState) -> dict[str, object]:
         """Check the topic and its policy coverage before any LLM call."""
-        decision = validate_scope(state["query"])
+        if state.get("fallback_reason"):
+            # Retrieval already failed. Re-deciding scope on an empty
+            # candidate list would overwrite that cause with
+            # "no_authoritative_evidence", which is the symptom.
+            return {}
+        try:
+            decision = validate_scope(state["query"])
+        except Exception as exc:
+            return _degraded(
+                "validate_scope_node", exc, ReasonCode.EVIDENCE_FAILURE
+            )
         updates: dict[str, object] = {
             "scope_score": decision.score,
             "scope_topics": list(decision.topics),
@@ -255,15 +364,15 @@ def build_graph(
             # whose score would otherwise buy them an answer.
             if state["raw_retrieval_score"] >= config.REWRITE_FLOOR:
                 updates["fallback_reason"] = ReasonCode.UNSUPPORTED_TOPIC.value
-            return updates
-        # Coverage is checked before the rewrite branch on purpose: if no
-        # active policy covers the topic, a rewrite cannot conjure one and
-        # the request would only pay for an LLM call before falling back.
-        coverage = select_evidence(
-            state["retrieved_candidates"], documents_by_id, decision.topics
-        )
-        if not coverage.ok:
-            updates["fallback_reason"] = coverage.reason
+        # Policy coverage is NOT checked here. It used to be, to save the
+        # rewrite branch an LLM call when no policy covered the topic --
+        # but ``select_evidence`` filters the RETRIEVED CANDIDATES, not
+        # the corpus, and a rewrite changes which documents are retrieved.
+        # The check therefore refused medium-band questions whose policy
+        # merely sat outside the original top-k, logging a corpus-gap
+        # reason for a question the corpus answers. It now runs once, in
+        # ``select_evidence_node``, against whichever candidate set that
+        # branch actually produced.
         return updates
 
     def rewrite_node(state: PipelineState) -> dict[str, object]:
@@ -274,16 +383,18 @@ def build_graph(
         output about the employee's question, and one reason to reject it
         is that it may have absorbed an injected instruction.
         """
-        candidates, rewrite_failed = safe_rewrite(state["query"])
+        candidates, failure_reason = rewrite(state["query"])
         validation = validate_rewrites(
             state["query"], candidates, state.get("scope_topics", [])
         )
-        return {
+        updates: dict[str, object] = {
             "route": "rewrite",
             "rewritten_queries": list(validation.accepted_queries),
-            "rewrite_failed": rewrite_failed,
             "rewrite_rejected": validation.reason is not None,
         }
+        if failure_reason is not None:
+            updates["rewrite_failure_reason"] = failure_reason
+        return updates
 
     def retrieve_expanded_node(state: PipelineState) -> dict[str, object]:
         """Retrieve with the original plus rewritten queries, max-pooled.
@@ -292,7 +403,19 @@ def build_graph(
         never make retrieval worse than the original-only baseline.
         """
         queries = [state["query"], *state.get("rewritten_queries", [])]
-        results = retriever.search(queries, config.TOP_K)
+        try:
+            results = retriever.search(queries, config.TOP_K)
+        except Exception as exc:
+            # The zero score makes the expanded router choose "fallback";
+            # the explicit reason is what the log actually records.
+            return {
+                "expanded_retrieval_score": 0.0,
+                **_degraded(
+                    "retrieve_expanded_node",
+                    exc,
+                    ReasonCode.RETRIEVAL_FAILURE,
+                ),
+            }
         top_score = results[0].score if results else 0.0
         return {
             "retrieved_candidates": results,
@@ -301,11 +424,16 @@ def build_graph(
 
     def select_evidence_node(state: PipelineState) -> dict[str, object]:
         """Reduce the candidates to policy-first, citable answer evidence."""
-        selection = select_evidence(
-            state["retrieved_candidates"],
-            documents_by_id,
-            state.get("scope_topics", []),
-        )
+        try:
+            selection = select_evidence(
+                state["retrieved_candidates"],
+                documents_by_id,
+                state.get("scope_topics", []),
+            )
+        except Exception as exc:
+            return _degraded(
+                "select_evidence_node", exc, ReasonCode.EVIDENCE_FAILURE
+            )
         if not selection.ok:
             return {"fallback_reason": selection.reason}
         return {
@@ -325,7 +453,7 @@ def build_graph(
         if state.get("route") != "rewrite":
             updates["route"] = "direct_answer"
         try:
-            updates["candidate_answer"] = generate_answer(
+            updates["candidate_answer"] = report(
                 state["query"], state["answer_evidence"]
             )
         # Caught before the broad handler so the two stay distinguishable:
@@ -377,11 +505,21 @@ def build_graph(
         explicit_reason = state.get("fallback_reason")
         if explicit_reason:
             reason = explicit_reason
+        elif state.get("rewrite_failure_reason"):
+            # The rewriter never ran to completion. Reporting that as a
+            # low expanded score would tell an operator the corpus is
+            # thin during a provider outage, and would tell the employee
+            # to contact HR about a service that was never reachable.
+            reason = str(state["rewrite_failure_reason"])
         elif state.get("rewrite_rejected"):
             # Separable on purpose: the evidence was thin because every
             # rewrite drifted, not because the corpus lacks the answer.
             reason = ReasonCode.REWRITE_REJECTED.value
-        elif "expanded_retrieval_score" in state:
+        elif state.get("route") == "rewrite":
+            # The branch marker the rewrite node already set, rather than
+            # the presence of a score key. Key presence is not a fact
+            # about the route: any node that ever writes that key -- even
+            # as None -- would silently change what the log records.
             reason = ReasonCode.REWRITE_LOW_RETRIEVAL_SCORE.value
         else:
             reason = ReasonCode.LOW_RETRIEVAL_SCORE.value
@@ -435,7 +573,11 @@ def build_graph(
             "fallback": "fallback",
         },
     )
-    builder.add_edge("rewrite", "retrieve_expanded")
+    builder.add_conditional_edges(
+        "rewrite",
+        route_after_rewrite,
+        {"expand": "retrieve_expanded", "fallback": "fallback"},
+    )
     builder.add_conditional_edges(
         "retrieve_expanded",
         route_after_expanded_retrieval,

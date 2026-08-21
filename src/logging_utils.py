@@ -32,6 +32,15 @@ from src.schemas import LogReadResult, LogWriteResult
 # log never enters memory whole.
 _TAIL_BLOCK_BYTES = 65536
 
+# Hard ceiling on the query text of one record. The bound lives at the
+# writer rather than at any one caller because this is the single choke
+# point into an append-only file with no rotation: a query rejected FOR
+# BEING TOO LONG is still logged, and the guardrail's own limit bounds
+# what the pipeline processes, not what reaches the sink. The marker keeps
+# a truncated record honest about being truncated.
+_MAX_LOGGED_QUERY_CHARS = 1000
+_TRUNCATION_MARKER = "...[truncated]"
+
 
 def log_fallback_event(
     *,
@@ -47,8 +56,9 @@ def log_fallback_event(
     """Append one blocked/fallback event as a single JSONL line.
 
     Writes are best-effort: a logging failure must never break the user
-    request, so filesystem errors are reported on stderr by exception
-    type only and then returned as a failed result (AGENTS.md section 8).
+    request, so filesystem and serialization errors alike are reported on
+    stderr by exception type only and then returned as a failed result
+    (AGENTS.md section 8).
 
     Args:
         query: The user query that was blocked or fell back.
@@ -71,20 +81,27 @@ def log_fallback_event(
     """
     path = Path(log_path if log_path is not None else config.FALLBACK_LOG_PATH)
     timestamp = now() if now is not None else datetime.now().astimezone()
-    record = {
-        "timestamp": timestamp.isoformat(),
-        "query": query,
-        "reason": str(reason),
-        "raw_retrieval_score": raw_retrieval_score,
-        "expanded_retrieval_score": expanded_retrieval_score,
-        "top_sources": list(top_sources),
-        "rewritten_queries": list(rewritten_queries),
-    }
     try:
+        record = {
+            "timestamp": timestamp.isoformat(),
+            "query": _bounded_query(query),
+            "reason": str(reason),
+            "raw_retrieval_score": raw_retrieval_score,
+            "expanded_retrieval_score": expanded_retrieval_score,
+            "top_sources": list(top_sources),
+            "rewritten_queries": list(rewritten_queries),
+        }
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except OSError as exc:
+    # Serialization belongs inside the handler, not only the filesystem
+    # call: a caller may hand this writer a query the guardrail rejected
+    # for not being a string, and ``json.dumps`` answers that with
+    # TypeError while ``handle.write`` answers a lone surrogate with
+    # UnicodeEncodeError. Both used to escape the refusal node and kill
+    # the request, which is what "best-effort" exists to prevent
+    # (AGENTS.md section 4, invariant 9).
+    except (OSError, TypeError, ValueError) as exc:
         print(
             "logging_utils: failed to append fallback event "
             f"({type(exc).__name__})",
@@ -92,6 +109,32 @@ def log_fallback_event(
         )
         return LogWriteResult(ok=False, error_type=type(exc).__name__)
     return LogWriteResult(ok=True)
+
+
+def _bounded_query(query: str) -> str:
+    """Cap one record's query text so the sink cannot grow without bound.
+
+    Args:
+        query: Query text as the caller supplied it.
+
+    Returns:
+        The text unchanged when it fits, otherwise its first
+        ``_MAX_LOGGED_QUERY_CHARS`` characters followed by a marker.
+
+    Raises:
+        TypeError: If ``query`` is not a string. The AGENTS.md section 8
+            schema types this field as text, and ``json.dumps`` would
+            silently accept a dict or an int and write a record no reader
+            of that schema can trust. Rejecting it here makes every
+            non-string behave the same way -- a reported failed write --
+            instead of depending on whether the payload happened to be
+            JSON-serialisable. The caller's own handler catches it.
+    """
+    if not isinstance(query, str):
+        raise TypeError("log record 'query' must be a string")
+    if len(query) <= _MAX_LOGGED_QUERY_CHARS:
+        return query
+    return query[:_MAX_LOGGED_QUERY_CHARS] + _TRUNCATION_MARKER
 
 
 def read_recent_events(

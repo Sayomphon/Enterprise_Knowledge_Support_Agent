@@ -297,6 +297,52 @@ class TestAuthorityMetadata(unittest.TestCase):
                     documents[canonical_id].authority, "authoritative"
                 )
 
+    def test_canonical_link_to_a_retired_policy_fails_fast(self) -> None:
+        # Authority alone is not enough. Evidence selection drops a
+        # retired policy, so a chat document whose only link points at one
+        # is evidence that can never support an answer -- and every query
+        # it serves would fall back with "no_authoritative_evidence", a
+        # runtime symptom of a metadata fault caught here instead.
+        _write(
+            self.corpus_dir,
+            "HR-901.md",
+            _document_text(source_id="HR-901", status="inactive"),
+        )
+        _write(
+            self.corpus_dir,
+            "CHT-901.md",
+            _document_text(
+                source_id="CHT-901",
+                source_type="chat",
+                authority="supplementary",
+                canonical_source_ids="\n  - HR-901",
+            ),
+        )
+
+        with self.assertRaises(CorpusValidationError) as caught:
+            load_documents(str(self.corpus_dir))
+
+        self.assertIn("active policy", str(caught.exception))
+
+    def test_duplicate_frontmatter_key_fails_fast(self) -> None:
+        # yaml.safe_load keeps the LAST occurrence silently, so the file
+        # would load with an id different from the one a reviewer reads at
+        # the top of it -- and the duplicate-id check downstream only ever
+        # sees the surviving value.
+        _write(
+            self.corpus_dir,
+            "HR-901.md",
+            _document_text(source_id="HR-901").replace(
+                "canonical_source_ids: []\n",
+                "canonical_source_ids: []\nsource_id: HR-999\n",
+            ),
+        )
+
+        with self.assertRaises(CorpusValidationError) as caught:
+            load_documents(str(self.corpus_dir))
+
+        self.assertIn("duplicate frontmatter key", str(caught.exception))
+
     def test_authority_contradicting_source_type_fails_fast(self) -> None:
         _write(
             self.corpus_dir,

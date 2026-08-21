@@ -142,6 +142,47 @@ def _validate_canonical_links(
                     f"authoritative policy, but {canonical_id!r} is "
                     f"{target.authority}"
                 )
+            if target.status != "active":
+                # Authority alone is not enough: evidence selection drops a
+                # retired policy, so a chat document whose only canonical
+                # link points at one becomes evidence that can never
+                # support an answer. Without this check the corpus loads
+                # clean and every query it serves falls back with
+                # "no_authoritative_evidence" -- a runtime symptom of a
+                # metadata fault the loader promises to catch at start-up.
+                raise CorpusValidationError(
+                    f"{file_name}: canonical_source_ids must reference an "
+                    f"active policy, but {canonical_id!r} is "
+                    f"{target.status}"
+                )
+
+
+class _StrictLoader(yaml.SafeLoader):
+    """A safe loader that refuses a mapping with a repeated key.
+
+    ``yaml.safe_load`` keeps the LAST occurrence of a duplicated key and
+    says nothing. For this corpus that is a correctness fault, not a
+    style one: a file declaring ``source_id`` twice loads with an id
+    different from the one a reviewer reads at the top of it, the
+    duplicate-id check downstream only ever sees the surviving value, and
+    the mismatch then travels into retrieval ranking, citation
+    validation, and the ``[ID]`` markers an employee reads.
+    """
+
+    def construct_mapping(self, node, deep: bool = False) -> dict:
+        """Build one mapping, rejecting a key that appears twice."""
+        seen: set = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    None,
+                    None,
+                    f"duplicate frontmatter key {key!r}",
+                    key_node.start_mark,
+                )
+            seen.add(key)
+        return super().construct_mapping(node, deep)
 
 
 def _parse_document(path: Path) -> Document:
@@ -241,10 +282,14 @@ def _validated_metadata(file_name: str, frontmatter_text: str) -> dict:
             ``authority`` contradicts the ``source_type``.
     """
     try:
-        loaded = yaml.safe_load(frontmatter_text)
+        loaded = yaml.load(frontmatter_text, Loader=_StrictLoader)
     except yaml.YAMLError as exc:
+        # ``problem`` carries the useful half of a MarkedYAMLError; args[0]
+        # is its context, which is None for the duplicate-key case.
+        detail = getattr(exc, "problem", None)
         raise CorpusValidationError(
             f"{file_name}: frontmatter is not valid YAML"
+            + (f" ({detail})" if detail else "")
         ) from exc
     if not isinstance(loaded, dict):
         raise CorpusValidationError(

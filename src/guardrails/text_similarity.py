@@ -84,12 +84,40 @@ def containment(
     """
     normalized_phrase = normalize_for_matching(phrase)
     normalized_text = normalize_for_matching(text)
-    if normalized_phrase and normalized_phrase in normalized_text:
+    return containment_of_ngrams(
+        normalized_phrase,
+        character_ngrams(normalized_phrase, ngram_range),
+        normalized_text,
+        character_ngrams(normalized_text, ngram_range),
+    )
+
+
+def containment_of_ngrams(
+    phrase: str,
+    phrase_ngrams: set[str],
+    text: str,
+    text_ngrams: set[str],
+) -> float:
+    """Score containment from fragments the caller already computed.
+
+    ``containment`` re-normalizes and re-fragments both sides on every
+    call, which is wasted work for a catalog of constant aliases scored
+    against one query: the scope gate was rebuilding 61 constant alias
+    sets, and the query's own set 61 times, for every question.
+
+    Args:
+        phrase: Normalized reference phrase, for the verbatim check.
+        phrase_ngrams: Fragments of ``phrase``.
+        text: Normalized text to search, for the verbatim check.
+        text_ngrams: Fragments of ``text``.
+
+    Returns:
+        The same value ``containment`` would return for the two strings.
+    """
+    if phrase and phrase in text:
         return 1.0
-    phrase_ngrams = character_ngrams(normalized_phrase, ngram_range)
     if not phrase_ngrams:
         return 0.0
-    text_ngrams = character_ngrams(normalized_text, ngram_range)
     return len(phrase_ngrams & text_ngrams) / len(phrase_ngrams)
 
 

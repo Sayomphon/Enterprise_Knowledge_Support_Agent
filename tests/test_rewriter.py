@@ -50,7 +50,7 @@ def _rewrite_capturing_stderr(query: str) -> tuple[list[str], bool, str]:
     return queries, failed, stderr.getvalue()
 
 
-@mock.patch("src.agents.rewriter.get_llm")
+@mock.patch("src.agents.rewriter.get_rewrite_llm")
 class TestSafeRewrite(unittest.TestCase):
     """Success path and every degradation path of the rewrite seam."""
 

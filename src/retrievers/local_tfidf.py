@@ -28,9 +28,10 @@ class LocalTfidfRetriever:
         """Build the TF-IDF index exactly once over the supplied corpus.
 
         Args:
-            documents: Validated corpus documents from the loader. The
-                index is fitted here at construction time; ``search`` only
-                transforms queries and never rebuilds it.
+            documents: Validated corpus documents from the loader. Only
+                the active ones are indexed. The index is fitted here at
+                construction time; ``search`` only transforms queries and
+                never rebuilds it.
             ngram_range: Character n-gram span. Injectable so the
                 calibration ablation can sweep candidate configurations
                 without editing this module. The (2, 5) default won the
@@ -39,22 +40,37 @@ class LocalTfidfRetriever:
                 and answerable raw scores (see src/config.py).
 
         Raises:
-            ValueError: If ``documents`` is empty.
+            ValueError: If no active document remains to index.
         """
         if not documents:
             raise ValueError(
                 "LocalTfidfRetriever requires at least one document"
             )
-        self._documents = tuple(documents)
+        # Retired documents are excluded from the index, not merely from
+        # the answer. Leaving them in lets a superseded policy take a
+        # top-k slot from the active one that replaced it, and -- because
+        # the band router reads the top-1 score -- lets it decide the
+        # route on the strength of text that may never support an answer.
+        # The full corpus, retired entries included, still reaches
+        # evidence selection through ``documents_by_id`` for canonical
+        # link resolution, which rejects them there on its own terms.
+        self._documents = tuple(
+            document for document in documents if document.status == "active"
+        )
+        if not self._documents:
+            raise ValueError(
+                "LocalTfidfRetriever requires at least one active document"
+            )
         # Public read-only telemetry: observability surfaces report the
         # active n-gram configuration from here instead of guessing.
         self.ngram_range = ngram_range
         # Character n-grams instead of word tokenisation: Thai has no
         # reliable whitespace word boundaries, so a word analyzer would
         # need a segmentation model and still break on informal spelling.
-        # Overlapping character fragments keep a typo such as
-        # "ลาพักรอ้น" close to the correct "ลาพักร้อน" because most
-        # n-grams still match.
+        # Overlapping character fragments keep a transposed-tone-mark
+        # misspelling of "annual leave" close to its correct spelling,
+        # because only the fragments covering the swapped characters stop
+        # matching.
         self._vectorizer = TfidfVectorizer(
             analyzer="char",
             ngram_range=ngram_range,

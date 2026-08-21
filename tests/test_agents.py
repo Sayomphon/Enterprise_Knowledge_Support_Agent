@@ -11,7 +11,11 @@ import os
 import unittest
 from unittest import mock
 
-from src.agents import MissingLlmCredentialError, get_llm
+from src.agents import (
+    MissingLlmCredentialError,
+    credential_fingerprint,
+    get_llm,
+)
 
 KEY_VARIABLE = "OPENAI_API_KEY"
 FAKE_KEY = "sk-test-not-a-real-key"
@@ -45,6 +49,40 @@ class TestCredentialBoundary(unittest.TestCase):
                     get_llm()
 
         self.assertEqual(client.call_count, 0)
+
+    def test_rotated_credential_retires_the_cached_client(self) -> None:
+        # The credential check alone only detects a key being REMOVED. A
+        # rotated or revoked key leaves has_llm_credential() true, so a
+        # cache keyed on the model name alone kept handing back a client
+        # built with the dead secret and every request degraded as
+        # reporter_failure until the process restarted.
+        # The patched constructor returns one shared mock, so identity
+        # cannot distinguish the two clients: what is under test is
+        # whether a SECOND client was constructed at all.
+        with mock.patch("src.agents.ChatOpenAI") as client:
+            with mock.patch.dict(os.environ, {KEY_VARIABLE: "sk-old-value"}):
+                get_llm("gpt-4o-mini")
+            with mock.patch.dict(os.environ, {KEY_VARIABLE: "sk-new-value"}):
+                get_llm("gpt-4o-mini")
+
+        self.assertEqual(client.call_count, 2)
+
+    def test_same_credential_still_reuses_one_client(self) -> None:
+        with mock.patch("src.agents.ChatOpenAI") as client:
+            with mock.patch.dict(os.environ, {KEY_VARIABLE: "sk-value"}):
+                get_llm("gpt-4o-mini")
+                get_llm("gpt-4o-mini")
+
+        self.assertEqual(client.call_count, 1)
+
+    def test_the_fingerprint_never_contains_the_credential(self) -> None:
+        secret = "sk-a-very-secret-value"
+        with mock.patch.dict(os.environ, {KEY_VARIABLE: secret}):
+            fingerprint = credential_fingerprint()
+
+        self.assertTrue(fingerprint)
+        self.assertNotIn(secret, fingerprint)
+        self.assertNotIn(secret[3:], fingerprint)
 
     def test_error_text_names_the_variable_but_never_a_value(self) -> None:
         with mock.patch.dict(os.environ, {KEY_VARIABLE: ""}):

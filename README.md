@@ -434,12 +434,12 @@ flowchart TD
     Q(["START &middot; employee question"]):::term
 
     subgraph G1["1 &middot; Deterministic screen, before any model call"]
-        IG["input_guardrail<br/>12 named regex rules"]:::det
+        IG["input_guardrail<br/>13 named regex rules"]:::det
     end
 
     subgraph G2["2 &middot; Retrieval and score routing, still no model call"]
         RO["retrieve_original<br/>character TF-IDF, top 3"]:::det
-        VS["validate_scope<br/>supported topic + policy coverage"]:::det
+        VS["validate_scope<br/>supported topic"]:::det
     end
 
     subgraph G3["3 &middot; Adaptive rewrite, medium band only"]
@@ -496,17 +496,22 @@ end of the graph without first writing a reason code to the log.
 
 ### Step by step
 
-1. **`input_guardrail`** screens the raw query against 12 named regex rules and
+1. **`input_guardrail`** screens the raw query against 13 named regex rules and
    the length and type limits. A match ends the request at `refuse`. This runs
    first precisely so that an attack costs nothing: there is no point paying a
    provider for a request you have already decided to decline, and an
    instruction-override string should never enter a prompt in the first place.
 2. **`retrieve_original`** searches the corpus with character TF-IDF and keeps
    the top 3 with their cosine scores.
-3. **`validate_scope`** asks two deterministic questions before any score is
+3. **`validate_scope`** asks one deterministic question before any score is
    allowed to matter: does this query resolve to one of the five supported
-   topics, and is there an **active policy document** covering that topic? Either
-   answer being "no" ends the request at `fallback`.
+   topics? A "no" ends the request at `fallback`. Policy coverage is *not*
+   checked here. It used to be, to spare the rewrite branch an LLM call — but
+   evidence selection filters the retrieved candidates rather than the corpus,
+   and a rewrite changes what gets retrieved, so the early check refused
+   medium-band questions whose policy merely sat outside the original top 3.
+   Coverage is now decided once, in `select_evidence`, against whichever
+   candidate set the branch actually produced.
 4. **The score router** then splits the survivors into three bands. Below 0.10 is
    a fallback; 0.10 to 0.19 buys one rewrite; 0.19 and above goes straight to
    evidence selection. The router is a function, not a node —
@@ -517,7 +522,13 @@ end of the graph without first writing a reason code to the log.
    Rejected candidates reach neither the index nor the log.
 6. **`retrieve_expanded`** searches with the original query *plus* the accepted
    rewrites and max-pools per document, so a bad rewrite can never score worse
-   than the original alone. Below 0.21 the request falls back.
+   than the original alone. Below 0.21 the request falls back. When *no* rewrite
+   survived, this node is skipped entirely: the search would repeat the original
+   one exactly, and a medium-band score cannot clear a final gate that
+   `config.py` forbids from sitting below the direct threshold, so the verdict
+   is already decided. The request goes straight to `fallback` carrying why the
+   rewrite produced nothing — `rewrite_failure` or `llm_not_configured` for a
+   rewriter that never ran, `rewrite_rejected` when every candidate drifted.
 7. **`select_evidence`** orders policy first and chat second, and resolves a chat
    document's `canonical_source_ids` so a transcript always arrives with the
    policy it is discussing.
@@ -859,23 +870,31 @@ rule is paired with a benign counter-example by `rule_id`.
 
 | Layer | What it does | What it does not do |
 |---|---|---|
-| Input guardrail | 12 named regex rules screen the query before the first LLM call | Detect novel phrasings, or anything semantic |
+| Input guardrail | 13 named regex rules screen the query before the first LLM call | Detect novel phrasings, or anything semantic |
 | Rewrite re-screen | The same screen runs again on every model-generated rewrite candidate | Prevent a model from being confused by benign-looking text |
 | Evidence encoding | Retrieved text is `json.dumps`-encoded into the human message; the system prompt declares those values untrusted data | Solve indirect prompt injection |
 | Output validation | Claims are validated against the evidence ID set and its policy subset | Verify that a claim is true |
 
-Matching runs on a hardened folding of the input — NFKC, format-character
-removal (zero-width characters included), separator folding, case folding — so
-obfuscation does not silently bypass a rule. The folding recomposes Thai SARA AM
-explicitly, because NFKC splits it and NFC does not put it back; without that
-repair every Thai rule stops matching.
+Matching runs on hardened foldings of the input — NFKC, separator folding, case
+folding — and on **two** treatments of zero-width characters rather than one.
+Deleting them rejoins `Ig<ZWSP>nore`, but it also glues `ignore<ZWSP>previous`
+into a single token that no longer offers the whitespace gap the rule requires;
+folding them to a space does exactly the reverse. Both foldings are built and a
+rule fires if either hits, so the attacker's choice of hiding place does not
+decide the outcome. The folding recomposes Thai SARA AM explicitly, because NFKC
+splits it and NFC does not put it back; without that repair every Thai rule
+stops matching.
 
 **The regex screen is a precision-first prototype safeguard, not
-defence-in-depth.** It is measured on 16 curated attacks and 16 benign
+defence-in-depth.** It is measured on 21 curated attacks and 21 benign
 lookalikes, each rule paired with a benign counter-example so a new pattern
 cannot raise the block rate by breaking legitimate queries. `Injection Block
-Rate: 16/16` is a statement about those 16 cases and nothing else. Novel
-phrasings will pass it.
+Rate: 21/21` is a statement about those 21 cases and nothing else. Novel
+phrasings will pass it — and a phrasing being *canonical* is no guarantee it is
+covered: the article in "ignore **the** previous instructions" was missing from
+the determiner slot until it was added here, and the suite reported 16/16
+throughout, because every fixture was written in the wording its own rule was
+built from.
 
 JSON encoding contains **delimiter breakout** — a document carrying a literal
 `</SOURCE>` can no longer close its own record. It does not contain **indirect
@@ -919,6 +938,7 @@ complete set is:
 | Retrieval score | `low_retrieval_score`, `rewrite_low_retrieval_score` |
 | Rewrite | `rewrite_failure`, `rewrite_rejected` |
 | Answer service | `llm_not_configured`, `reporter_failure` |
+| Deterministic stage crash | `retrieval_failure`, `evidence_failure` |
 | Answer contract | `missing_citation`, `fabricated_citation`, `invalid_answer_structure`, `insufficient_reporter_evidence` |
 
 Two of these exist specifically so a degraded request is not mislabelled.
@@ -1014,7 +1034,7 @@ Two retrieval splits with different jobs, plus three contract fixtures:
 |---|---:|---|
 | `eval/retrieval_calibration.json` | 21 | **Tuning only.** Thresholds, n-gram configuration, alias catalog |
 | `eval/retrieval_heldout.json` | 14 | **Reporting only.** Run once, after thresholds freeze |
-| `eval/guardrail_cases.json` | 32 | 16 attacks / 16 benign lookalikes |
+| `eval/guardrail_cases.json` | 42 | 21 attacks / 21 benign lookalikes |
 | `eval/citation_cases.json` | 14 | Labelled candidate answers, one per rejection reason plus valid shapes |
 | `eval/rewrite_cases.json` | 17 | Valid normalisations and each drift shape the validator must reject |
 

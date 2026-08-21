@@ -67,7 +67,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass, replace
+import tempfile
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 EVAL_DIR = Path(__file__).resolve().parent
@@ -77,18 +79,46 @@ PROJECT_ROOT = EVAL_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src import config  # noqa: E402
-from src.answer_renderer import render_answer  # noqa: E402
-from src.evidence_selector import select_evidence  # noqa: E402
+from langgraph.graph.state import CompiledStateGraph  # noqa: E402
+
+from src.fallback import ReasonCode  # noqa: E402
+from src.graph import build_graph, route_after_raw_retrieval  # noqa: E402
 from src.guardrails.citation_validator import validate_answer  # noqa: E402
 from src.guardrails.input_guardrail import (  # noqa: E402
     matched_rule,
     screen_query,
 )
 from src.guardrails.rewrite_validator import validate_rewrites  # noqa: E402
-from src.guardrails.scope_validator import validate_scope  # noqa: E402
 from src.ingestion.loader import load_documents  # noqa: E402
 from src.retrievers.local_tfidf import LocalTfidfRetriever  # noqa: E402
-from src.schemas import AnswerClaim, Document, GroundedAnswer  # noqa: E402
+from src.schemas import (  # noqa: E402
+    AnswerClaim,
+    Document,
+    GroundedAnswer,
+    RetrievedDocument,
+)
+
+# Routing every case through the real graph means every fallback attempts a
+# telemetry write. The run gets its own throwaway sink so an evaluation can
+# never append to the deployment's log.
+_EVAL_LOG_DIR = tempfile.TemporaryDirectory(prefix="eval-telemetry-")
+_EVAL_LOG_SINK = Path(_EVAL_LOG_DIR.name) / "fallback_queries.jsonl"
+
+# The stub reporter's claim text. It is never scored -- the harness
+# measures routing and evidence, not wording -- but it must be non-blank
+# and free of citation markup to satisfy the answer contract.
+EVAL_CLAIM_TEXT = "evaluation harness placeholder claim"
+
+# The citation set describes an answer contract, so its probe query only
+# has to resolve to a supported topic; which topic is immaterial.
+CITATION_PROBE_QUERY = "ลาพักร้อนได้กี่วัน"
+CITATION_PROBE_TOPIC = "annual_leave"
+
+# The two buckets of the guardrail fixture, and the balanced minimum
+# AGENTS.md section 10 requires of it. A rate computed over fewer cases
+# than this is not evidence, so the harness refuses to report one.
+_GUARDRAIL_CASE_TYPES = ("attack", "benign")
+_MIN_GUARDRAIL_CASES_PER_TYPE = 12
 
 RETRIEVAL_SETS = {
     "calibration": "retrieval_calibration.json",
@@ -127,6 +157,7 @@ class Prediction:
 
 
 def _load_json(file_name: str) -> object:
+    """Decode one fixture file from the evaluation directory."""
     return json.loads((EVAL_DIR / file_name).read_text(encoding="utf-8"))
 
 
@@ -171,146 +202,148 @@ def load_rewrite_cache() -> dict[str, list[str]]:
     }
 
 
+def _cached_rewriter(rewrite_cache: dict[str, list[str]]):
+    """Build the rewrite seam the harness injects into the real graph.
+
+    Args:
+        rewrite_cache: Query to pre-generated variants, from
+            ``eval/cached_rewrites.json``.
+
+    Returns:
+        A callable with the signature of ``safe_rewrite`` that replays the
+        cache instead of calling a provider. A query the cache does not
+        cover is reported the way a provider failure is, so the graph
+        degrades exactly as it would in production.
+    """
+
+    def rewrite(query: str) -> tuple[list[str], str | None]:
+        candidates = rewrite_cache.get(query)
+        if not candidates:
+            return [], ReasonCode.REWRITE_FAILURE.value
+        return list(candidates), None
+
+    return rewrite
+
+
+def _stub_reporter(
+    query: str, retrieved: Sequence[RetrievedDocument]
+) -> GroundedAnswer:
+    """Stand in for the generation seam without calling a provider.
+
+    The harness measures routing and evidence selection, not wording, so
+    this returns the minimal candidate that satisfies the answer
+    contract: one claim citing every authoritative id the selector chose.
+    Everything downstream of it -- the citation validator, the promote
+    rule, the fallback edge -- is then the production code path rather
+    than a second implementation of it.
+
+    Args:
+        query: The guardrail-normalized query, unused here.
+        retrieved: Answer evidence chosen by the evidence selector.
+
+    Returns:
+        A candidate answer citing the authoritative evidence.
+    """
+    policy_ids = [
+        document.source_id
+        for document in retrieved
+        if document.authority == "authoritative"
+    ]
+    return GroundedAnswer(
+        claims=[AnswerClaim(text=EVAL_CLAIM_TEXT, source_ids=policy_ids)]
+    )
+
+
+def build_eval_graph(
+    retriever: LocalTfidfRetriever,
+    documents_by_id: dict[str, Document],
+    rewrite_cache: dict[str, list[str]],
+) -> CompiledStateGraph:
+    """Compile the production graph with both LLM seams replaced.
+
+    Args:
+        retriever: Index shared across the whole run.
+        documents_by_id: The corpus, for canonical-link resolution.
+        rewrite_cache: Pre-generated rewrites replayed for medium-band
+            cases.
+
+    Returns:
+        The same graph the CLI and the Streamlit app run, with the two
+        provider boundaries swapped for offline stand-ins and telemetry
+        pointed at a throwaway sink.
+    """
+    return build_graph(
+        retriever=retriever,
+        log_path=_EVAL_LOG_SINK,
+        documents=list(documents_by_id.values()),
+        rewriter=_cached_rewriter(rewrite_cache),
+        reporter=_stub_reporter,
+    )
+
+
 def predict(
     case: RetrievalCase,
-    retriever: LocalTfidfRetriever,
+    graph: CompiledStateGraph,
     rewrite_cache: dict[str, list[str]],
-    documents_by_id: dict[str, Document],
 ) -> Prediction:
-    """Route one case exactly as the runtime graph would, without LLMs."""
+    """Route one case through the production graph, without any LLM.
+
+    This invokes ``build_graph`` rather than restating its routing. A
+    second copy of the router cannot regress in step with the first, so a
+    harness that owns one is measuring itself: every threshold
+    comparison, every gate ordering, and every reason code below now
+    comes from ``src.graph``.
+
+    Args:
+        case: The labelled retrieval case.
+        graph: The compiled pipeline from ``build_eval_graph``.
+        rewrite_cache: Consulted only to report whether this query had a
+            cached rewrite, which is a fact about the fixture rather than
+            about the routing.
+
+    Returns:
+        The routing outcome read off the finished pipeline state.
+
+    Raises:
+        EvalFixtureError: If the fixture query does not pass the
+            guardrail, which would make its label untestable.
+    """
     guard = screen_query(case.query)
     if not guard.ok:
         raise EvalFixtureError(
             f"{case.id}: retrieval fixtures must pass the guardrail"
         )
-    query = guard.normalized_query
-    results = retriever.search([query], config.TOP_K)
-    raw_score = results[0].score if results else 0.0
-    retrieved_ids = tuple(r.source_id for r in results)
-    band = (
-        "high"
-        if raw_score >= config.DIRECT_ANSWER_THRESHOLD
-        else "medium"
-        if raw_score >= config.REWRITE_FLOOR
-        else "low"
-    )
+    state = graph.invoke({"query": case.query})
 
-    scope = validate_scope(query)
-    if not scope.supported:
-        return Prediction(
-            route="fallback",
-            band=band,
-            raw_score=raw_score,
-            expanded_score=None,
-            retrieved_ids=retrieved_ids,
-            cache_hit=None,
-            reason=(
-                "unsupported_topic"
-                if band != "low"
-                else "low_retrieval_score"
-            ),
-        )
-    coverage = select_evidence(results, documents_by_id, scope.topics)
-    if not coverage.ok:
-        return Prediction(
-            route="fallback",
-            band=band,
-            raw_score=raw_score,
-            expanded_score=None,
-            retrieved_ids=retrieved_ids,
-            cache_hit=None,
-            scope_topics=scope.topics,
-            reason=coverage.reason,
-        )
-    if band == "high":
-        return _with_evidence(
-            Prediction(
-                route="answered",
-                band="high",
-                raw_score=raw_score,
-                expanded_score=None,
-                retrieved_ids=retrieved_ids,
-                cache_hit=None,
-                scope_topics=scope.topics,
-            ),
-            results,
-            documents_by_id,
-        )
-    if band == "low":
-        return Prediction(
-            route="fallback",
-            band="low",
-            raw_score=raw_score,
-            expanded_score=None,
-            retrieved_ids=retrieved_ids,
-            cache_hit=None,
-            scope_topics=scope.topics,
-            reason="low_retrieval_score",
-        )
-
-    # Cached rewrites are model output too, so the harness runs them
-    # through the same validator as the runtime graph.
-    validation = validate_rewrites(
-        query, rewrite_cache.get(query, []), scope.topics
-    )
-    rewrites = list(validation.accepted_queries)
-    expanded_results = retriever.search([query, *rewrites], config.TOP_K)
-    expanded_score = (
-        expanded_results[0].score if expanded_results else 0.0
-    )
-    if expanded_score < config.FINAL_ANSWER_THRESHOLD:
-        return Prediction(
-            route="fallback",
-            band="medium",
-            raw_score=raw_score,
-            expanded_score=expanded_score,
-            retrieved_ids=tuple(r.source_id for r in expanded_results),
-            cache_hit=bool(rewrites),
-            scope_topics=scope.topics,
-            reason="rewrite_low_retrieval_score",
-        )
-    return _with_evidence(
-        Prediction(
-            route="answered",
-            band="medium",
-            raw_score=raw_score,
-            expanded_score=expanded_score,
-            retrieved_ids=tuple(r.source_id for r in expanded_results),
-            cache_hit=bool(rewrites),
-            scope_topics=scope.topics,
+    raw_score = state.get("raw_retrieval_score", 0.0)
+    band = route_after_raw_retrieval({"raw_retrieval_score": raw_score})
+    return Prediction(
+        route="answered" if state.get("route") == "answered" else "fallback",
+        band=band,
+        raw_score=raw_score,
+        expanded_score=state.get("expanded_retrieval_score"),
+        retrieved_ids=tuple(
+            document.source_id
+            for document in state.get("retrieved_candidates", [])
         ),
-        expanded_results,
-        documents_by_id,
+        cache_hit=(
+            guard.normalized_query in rewrite_cache
+            if band == "medium"
+            else None
+        ),
+        authoritative_ids=tuple(state.get("authoritative_source_ids", [])),
+        scope_topics=tuple(state.get("scope_topics", [])),
+        reason=state.get("fallback_reason"),
     )
-
-
-def _with_evidence(
-    prediction: Prediction,
-    results: list,
-    documents_by_id: dict[str, Document],
-) -> Prediction:
-    """Apply the runtime evidence gate to a would-be answered case.
-
-    Args:
-        prediction: The score-based routing outcome.
-        results: Retrieved candidates behind that outcome.
-        documents_by_id: The corpus, needed to resolve canonical links.
-
-    Returns:
-        The prediction with its authoritative evidence recorded, demoted
-        to fallback when no policy document backs the request.
-    """
-    selection = select_evidence(
-        results, documents_by_id, prediction.scope_topics
-    )
-    if not selection.ok:
-        return replace(
-            prediction, route="fallback", reason=selection.reason
-        )
-    return replace(prediction, authoritative_ids=selection.authoritative_ids)
 
 
 def _ratio(numerator: int, denominator: int) -> str:
+    """Format one metric as a rate and its raw counts.
+
+    An empty denominator reports "n/a" rather than a rate: a metric over
+    no cases is not a measurement, and printing 0.000 or 1.000 for it
+    would read as one.
+    """
     if denominator == 0:
         return "n/a (0 cases)"
     return f"{numerator / denominator:.3f} ({numerator}/{denominator})"
@@ -341,9 +374,9 @@ def evaluate_retrieval(
     """
     cases = load_retrieval_cases(set_name)
     rewrite_cache = load_rewrite_cache()
+    graph = build_eval_graph(retriever, documents_by_id, rewrite_cache)
     predictions = {
-        case.id: predict(case, retriever, rewrite_cache, documents_by_id)
-        for case in cases
+        case.id: predict(case, graph, rewrite_cache) for case in cases
     }
 
     print(f"== retrieval set: {set_name} ({len(cases)} cases) ==")
@@ -479,6 +512,56 @@ def evaluate_retrieval(
     )
 
 
+def _validated_guardrail_cases(raw_cases: object) -> list[dict]:
+    """Reject a guardrail fixture that cannot support a security claim.
+
+    The retrieval loader validates its fixtures strictly and this one did
+    not, so two silent failures were possible: a record whose ``type``
+    was misspelled landed in neither bucket and left both denominators
+    untouched, and an empty file produced "n/a (0 cases)" with zero
+    failures -- a green security gate over no coverage at all.
+
+    Args:
+        raw_cases: Decoded contents of ``guardrail_cases.json``.
+
+    Returns:
+        The validated records.
+
+    Raises:
+        EvalFixtureError: If a record is malformed, a ``type`` is not one
+            of the two buckets, an id repeats, or either bucket falls
+            below the balanced minimum AGENTS.md section 10 requires.
+    """
+    if not isinstance(raw_cases, list):
+        raise EvalFixtureError("guardrail_cases.json must hold a list")
+    seen_ids: set[str] = set()
+    for case in raw_cases:
+        if not isinstance(case, dict):
+            raise EvalFixtureError("guardrail case must be an object")
+        missing = {"id", "type", "query"} - set(case)
+        if missing:
+            raise EvalFixtureError(
+                f"guardrail case is missing {sorted(missing)}"
+            )
+        if case["type"] not in _GUARDRAIL_CASE_TYPES:
+            raise EvalFixtureError(
+                f"{case['id']}: type must be one of "
+                f"{sorted(_GUARDRAIL_CASE_TYPES)}, got {case['type']!r}"
+            )
+        if case["id"] in seen_ids:
+            raise EvalFixtureError(f"duplicate case id {case['id']!r}")
+        seen_ids.add(case["id"])
+    for bucket in _GUARDRAIL_CASE_TYPES:
+        count = sum(case["type"] == bucket for case in raw_cases)
+        if count < _MIN_GUARDRAIL_CASES_PER_TYPE:
+            raise EvalFixtureError(
+                f"guardrail set needs at least "
+                f"{_MIN_GUARDRAIL_CASES_PER_TYPE} {bucket} cases, got "
+                f"{count}"
+            )
+    return raw_cases
+
+
 def evaluate_guardrail() -> int:
     """Run the guardrail set and print both precision-critical rates.
 
@@ -488,7 +571,7 @@ def evaluate_guardrail() -> int:
         guardrail that blocks real questions is as unusable as one that
         misses attacks.
     """
-    raw_cases = _load_json("guardrail_cases.json")
+    raw_cases = _validated_guardrail_cases(_load_json("guardrail_cases.json"))
     attacks = [c for c in raw_cases if c["type"] == "attack"]
     benign = [c for c in raw_cases if c["type"] == "benign"]
     print(
@@ -562,7 +645,7 @@ def evaluate_citations() -> int:
             grounded_claims += bool(cited) and cited <= evidence_ids
         if not result.ok:
             rejected += 1
-            leaked += bool(_promoted_answer(result.ok, candidate))
+            leaked += bool(_promoted_answer(candidate, case))
     print(
         "  Citation Provenance Validity Rate: "
         f"{_ratio(correct, len(raw_cases))}"
@@ -578,21 +661,106 @@ def evaluate_citations() -> int:
     return (len(raw_cases) - correct) + leaked
 
 
-def _promoted_answer(validated: bool, candidate: GroundedAnswer) -> str:
-    """Return the public answer text the runtime would show, if any.
+def _promoted_answer(candidate: GroundedAnswer, case: dict) -> str:
+    """Return the public answer the RUNTIME produces for one candidate.
 
-    This mirrors the graph's promote rule -- render only what the
-    validator accepted -- so the leakage metric measures that rule
-    instead of restating it.
+    The previous version of this helper took the validator's own verdict
+    and returned "" whenever that verdict was False. Since it was only
+    ever called on rejected candidates, it could not return anything but
+    "": the leakage metric was structurally incapable of being non-zero
+    and would have reported 0 even with the promote rule deleted from
+    ``validate_citations_node``. It now drives the real graph with a
+    reporter that hands back this exact candidate, so the number measures
+    the pipeline's promote rule rather than restating it.
 
     Args:
-        validated: The validator's verdict for this candidate.
-        candidate: The candidate answer the reporter produced.
+        candidate: The candidate answer the fixture describes.
+        case: The fixture record, for the evidence behind that candidate.
 
     Returns:
-        The rendered answer when validation passed, else an empty string.
+        ``state["answer"]`` as the pipeline would show it, or an empty
+        string when the request degraded instead.
     """
-    return render_answer(candidate) if validated else ""
+    documents = _citation_case_corpus(case)
+    graph = build_graph(
+        retriever=_FixedRetriever(documents),
+        log_path=_EVAL_LOG_SINK,
+        documents=documents,
+        rewriter=lambda query: ([], True),
+        reporter=lambda query, retrieved: candidate,
+    )
+    state = graph.invoke({"query": CITATION_PROBE_QUERY})
+    return str(state.get("answer", ""))
+
+
+class _FixedRetriever:
+    """Return the whole supplied corpus, top-scored, for any query.
+
+    The citation set describes an answer contract, not a retrieval
+    outcome, so this hands the pipeline exactly the evidence the fixture
+    names and lets the real scope, evidence and validation stages run.
+    """
+
+    def __init__(self, documents: list[Document]) -> None:
+        self._results = [
+            RetrievedDocument(
+                source_id=document.source_id,
+                title=document.title,
+                source_type=document.source_type,
+                content=document.content,
+                score=min(config.DIRECT_ANSWER_THRESHOLD + 0.1, 1.0),
+                authority=document.authority,
+                status=document.status,
+                topics=document.topics,
+                canonical_source_ids=document.canonical_source_ids,
+                matched_query=CITATION_PROBE_QUERY,
+                matched_query_type="original",
+            )
+            for document in documents
+        ]
+
+    def search(
+        self, queries: Sequence[str], top_k: int
+    ) -> list[RetrievedDocument]:
+        """Ignore the query and return the fixture's evidence."""
+        return list(self._results[:top_k])
+
+
+def _citation_case_corpus(case: dict) -> list[Document]:
+    """Build the corpus one citation fixture implies.
+
+    Args:
+        case: The fixture record.
+
+    Returns:
+        One document per id in ``evidence_ids``, carrying policy
+        authority when the fixture lists it in ``authoritative_ids`` and
+        chat authority otherwise. Every document covers the probe topic,
+        so the scope and evidence gates admit them and the run reaches
+        the validation node under test.
+    """
+    authoritative = set(case["authoritative_ids"])
+    return [
+        Document(
+            source_id=source_id,
+            title=source_id,
+            source_type="policy" if source_id in authoritative else "chat",
+            content=EVAL_CLAIM_TEXT,
+            authority=(
+                "authoritative"
+                if source_id in authoritative
+                else "supplementary"
+            ),
+            status="active",
+            topics=(CITATION_PROBE_TOPIC,),
+            canonical_source_ids=(
+                ()
+                if source_id in authoritative
+                else tuple(sorted(authoritative))
+            ),
+        )
+        for source_id in case["evidence_ids"]
+    ]
 
 
 def _candidate_answer(case: dict) -> GroundedAnswer:
@@ -637,6 +805,7 @@ def evaluate_rewrite_pairs() -> int:
 
 
 def _parse_ngram(raw: str) -> tuple[int, int]:
+    """Parse a ``MIN,MAX`` n-gram override from the command line."""
     minimum, maximum = (int(part) for part in raw.split(","))
     return (minimum, maximum)
 

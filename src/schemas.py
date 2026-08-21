@@ -322,14 +322,22 @@ class PipelineState(TypedDict):
     retrieved_candidates: NotRequired[list[RetrievedDocument]]
     raw_retrieval_score: NotRequired[float]
 
-    # Deterministic supported-scope verdict, re-evaluated after a rewrite.
+    # Deterministic supported-scope verdict for the original query. It is
+    # decided once, before the rewrite branch: the rewrite validator
+    # already refuses any candidate that leaves these topics, so a
+    # re-decision after expansion could only agree with this one.
     scope_topics: NotRequired[list[str]]
     scope_score: NotRequired[float]
     scope_reason: NotRequired[str]
 
     # Populated only on the medium-band rewrite path.
     rewritten_queries: NotRequired[list[str]]
-    rewrite_failed: NotRequired[bool]
+    # Why the rewriter produced nothing, or absent when it succeeded. It
+    # is a reason code rather than a boolean because the fallback node
+    # writes it straight into the log: a provider outage and a missing
+    # credential are different operator facts, and neither is "the corpus
+    # lacked an answer".
+    rewrite_failure_reason: NotRequired[str]
     rewrite_rejected: NotRequired[bool]
     expanded_retrieval_score: NotRequired[float]
 

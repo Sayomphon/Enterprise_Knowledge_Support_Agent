@@ -19,7 +19,11 @@ whenever the corpus scope changes.
 from __future__ import annotations
 
 from src import config
-from src.guardrails.text_similarity import containment
+from src.guardrails.text_similarity import (
+    character_ngrams,
+    containment_of_ngrams,
+    normalize_for_matching,
+)
 from src.schemas import KnowledgeTopic, ScopeDecision
 
 # Matches ``ReasonCode.UNSUPPORTED_TOPIC``; kept as a literal so this
@@ -114,6 +118,36 @@ UNSUPPORTED_TOPIC_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
+def _prepared(
+    catalog: dict[str, tuple[str, ...]],
+) -> dict[str, tuple[tuple[str, set[str]], ...]]:
+    """Fragment every alias once, at import, instead of once per query.
+
+    The catalogs are module constants, so their n-gram sets are constant
+    too; rebuilding them per call was the bulk of this gate's cost, and
+    the gate runs once per query plus once per rewrite candidate.
+
+    Args:
+        catalog: Topic to its alias tuple.
+
+    Returns:
+        The same mapping with each alias paired with its fragments.
+    """
+    return {
+        topic: tuple(
+            (normalized, character_ngrams(normalized))
+            for normalized in (
+                normalize_for_matching(alias) for alias in aliases
+            )
+        )
+        for topic, aliases in catalog.items()
+    }
+
+
+_SUPPORTED_ALIAS_NGRAMS = _prepared(SUPPORTED_TOPIC_ALIASES)
+_UNSUPPORTED_ALIAS_NGRAMS = _prepared(UNSUPPORTED_TOPIC_ALIASES)
+
+
 def validate_scope(
     query: str, match_threshold: float | None = None
 ) -> ScopeDecision:
@@ -142,14 +176,20 @@ def validate_scope(
         if match_threshold is not None
         else config.SCOPE_MATCH_THRESHOLD
     )
+    normalized_query = normalize_for_matching(query)
+    query_ngrams = character_ngrams(normalized_query)
     supported_scores = {
-        topic: _best_alias_score(query, aliases)
-        for topic, aliases in SUPPORTED_TOPIC_ALIASES.items()
+        topic: _best_alias_score(
+            normalized_query, query_ngrams, prepared_aliases
+        )
+        for topic, prepared_aliases in _SUPPORTED_ALIAS_NGRAMS.items()
     }
     unsupported_score = max(
         (
-            _best_alias_score(query, aliases)
-            for aliases in UNSUPPORTED_TOPIC_ALIASES.values()
+            _best_alias_score(
+                normalized_query, query_ngrams, prepared_aliases
+            )
+            for prepared_aliases in _UNSUPPORTED_ALIAS_NGRAMS.values()
         ),
         default=0.0,
     )
@@ -187,8 +227,18 @@ def validate_scope(
     )
 
 
-def _best_alias_score(query: str, aliases: tuple[str, ...]) -> float:
+def _best_alias_score(
+    normalized_query: str,
+    query_ngrams: set[str],
+    prepared_aliases: tuple[tuple[str, set[str]], ...],
+) -> float:
     """Score one topic by its best-matching alias inside the query."""
     return max(
-        (containment(alias, query) for alias in aliases), default=0.0
+        (
+            containment_of_ngrams(
+                alias, alias_ngrams, normalized_query, query_ngrams
+            )
+            for alias, alias_ngrams in prepared_aliases
+        ),
+        default=0.0,
     )
