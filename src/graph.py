@@ -2,10 +2,11 @@
 
 Implements the AGENTS.md section 2 architecture: deterministic guardrail,
 original TF-IDF retrieval, a supported-scope and authority-coverage gate,
-a calibrated three-band score router, an adaptive rewrite branch,
-policy-first evidence selection, grounded generation, and deterministic
-answer-contract validation whose invalid branch routes to fallback --
-never straight to ``END``. Reporter output enters the state as
+a calibrated three-band score router, a deterministic alias expansion
+that resolves most medium-band queries before any model is asked, an
+adaptive rewrite branch behind it, policy-first evidence selection,
+grounded generation, and deterministic answer-contract validation whose
+invalid branch routes to fallback -- never straight to ``END``. Reporter output enters the state as
 ``candidate_answer`` and only the validation node may promote it to the
 public ``answer`` (remediation plan Finding 5). Every threshold is read
 from ``src.config``; no number lives in this module.
@@ -41,6 +42,7 @@ from src.guardrails.rewrite_validator import validate_rewrites
 from src.guardrails.scope_validator import validate_scope
 from src.ingestion.loader import load_documents
 from src.logging_utils import log_fallback_event
+from src.query_expansion import alias_expansion_variants, label_alias_matches
 from src.retrievers.base import Retriever
 from src.retrievers.local_tfidf import LocalTfidfRetriever
 from src.schemas import Document, GroundedAnswer, PipelineState, RetrievedDocument
@@ -147,17 +149,42 @@ def route_after_scope(
     return "fallback" if band == "low" else band
 
 
+def route_after_alias_expansion(
+    state: PipelineState,
+) -> Literal["answer", "rewrite", "fallback"]:
+    """Spend an LLM call only when the alias catalog was not enough.
+
+    The medium band exists because the original score is inconclusive,
+    and the deterministic expansion often resolves it: the scope gate has
+    already named the topics, and their aliases are the corpus's own
+    wording for what the employee wrote informally. When that clears the
+    final threshold the request is answered with no model involved at
+    all, which also makes the route reproducible.
+
+    Args:
+        state: Pipeline state after the alias-expansion node ran.
+
+    Returns:
+        The branch key consumed by the LangGraph conditional edge.
+    """
+    if state.get("fallback_reason"):
+        return "fallback"
+    if state["expanded_retrieval_score"] >= config.FINAL_ANSWER_THRESHOLD:
+        return "answer"
+    return "rewrite"
+
+
 def route_after_rewrite(
     state: PipelineState,
 ) -> Literal["expand", "fallback"]:
     """Skip expanded retrieval when no rewrite survived validation.
 
     With no accepted rewrite the expanded search is byte-identical to the
-    original one, so its score equals ``raw_retrieval_score`` -- which is
-    below ``DIRECT_ANSWER_THRESHOLD`` by definition of the medium band,
-    and ``config`` requires ``FINAL_ANSWER_THRESHOLD`` not to sit below
-    that. The verdict is therefore already decided, and running the
-    search again would only pay for it.
+    alias expansion that already ran, so its score equals
+    ``expanded_retrieval_score`` -- which is below
+    ``FINAL_ANSWER_THRESHOLD``, or this branch would not have been taken.
+    The verdict is therefore already decided, and running the search
+    again would only pay for it.
 
     Args:
         state: Pipeline state after the rewrite node ran.
@@ -375,6 +402,45 @@ def build_graph(
         # branch actually produced.
         return updates
 
+    def expand_deterministic_node(state: PipelineState) -> dict[str, object]:
+        """Search the topic aliases before paying for a model rewrite.
+
+        The variants are configuration data derived from the topics the
+        scope gate already accepted, so they are not put through the
+        rewrite validator: that validator exists to prove a MODEL did not
+        change the employee's intent, and there is no model here. The
+        original query stays first in the search, so max-pooling makes
+        this expansion incapable of scoring worse than the raw retrieval
+        it replaces.
+        """
+        variants = alias_expansion_variants(
+            state["query"], state.get("scope_topics", [])
+        )
+        queries = [state["query"], *variants]
+        try:
+            results = retriever.search(queries, config.TOP_K)
+        except Exception as exc:
+            # The zero score would send the router to "rewrite"; the
+            # explicit reason overrides it into the fallback branch, so a
+            # crashed index never buys an LLM call.
+            return {
+                "alias_expansion_queries": variants,
+                "expanded_retrieval_score": 0.0,
+                **_degraded(
+                    "expand_deterministic_node",
+                    exc,
+                    ReasonCode.RETRIEVAL_FAILURE,
+                ),
+            }
+        top_score = results[0].score if results else 0.0
+        return {
+            "alias_expansion_queries": variants,
+            "retrieved_candidates": label_alias_matches(
+                results, variants, state["query"]
+            ),
+            "expanded_retrieval_score": top_score,
+        }
+
     def rewrite_node(state: PipelineState) -> dict[str, object]:
         """Rewrite the medium-band query, then enforce intent on the result.
 
@@ -397,12 +463,20 @@ def build_graph(
         return updates
 
     def retrieve_expanded_node(state: PipelineState) -> dict[str, object]:
-        """Retrieve with the original plus rewritten queries, max-pooled.
+        """Retrieve with the original, the aliases and the rewrites.
 
         The original query is always included, so a failed rewrite can
-        never make retrieval worse than the original-only baseline.
+        never make retrieval worse than the original-only baseline; the
+        alias variants ride along for the same reason, so a rewrite that
+        is worse than the catalog cannot undo what the catalog already
+        found.
         """
-        queries = [state["query"], *state.get("rewritten_queries", [])]
+        alias_queries = list(state.get("alias_expansion_queries", []))
+        queries = [
+            state["query"],
+            *alias_queries,
+            *state.get("rewritten_queries", []),
+        ]
         try:
             results = retriever.search(queries, config.TOP_K)
         except Exception as exc:
@@ -418,7 +492,9 @@ def build_graph(
             }
         top_score = results[0].score if results else 0.0
         return {
-            "retrieved_candidates": results,
+            "retrieved_candidates": label_alias_matches(
+                results, alias_queries, state["query"]
+            ),
             "expanded_retrieval_score": top_score,
         }
 
@@ -530,6 +606,7 @@ def build_graph(
             expanded_retrieval_score=state.get("expanded_retrieval_score"),
             top_sources=_top_source_ids(state),
             rewritten_queries=state.get("rewritten_queries", []),
+            alias_query_count=len(state.get("alias_expansion_queries", [])),
             log_path=log_path,
         )
         # Clearing the candidate is part of the fallback, not tidiness:
@@ -550,6 +627,7 @@ def build_graph(
     builder.add_node("refuse", refuse_node)
     builder.add_node("retrieve_original", retrieve_original_node)
     builder.add_node("validate_scope", validate_scope_node)
+    builder.add_node("expand_deterministic", expand_deterministic_node)
     builder.add_node("rewrite", rewrite_node)
     builder.add_node("retrieve_expanded", retrieve_expanded_node)
     builder.add_node("select_evidence", select_evidence_node)
@@ -569,7 +647,16 @@ def build_graph(
         route_after_scope,
         {
             "high": "select_evidence",
-            "medium": "rewrite",
+            "medium": "expand_deterministic",
+            "fallback": "fallback",
+        },
+    )
+    builder.add_conditional_edges(
+        "expand_deterministic",
+        route_after_alias_expansion,
+        {
+            "answer": "select_evidence",
+            "rewrite": "rewrite",
             "fallback": "fallback",
         },
     )

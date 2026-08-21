@@ -73,32 +73,39 @@ User query
    ▼ PASS
 [4] Score Router (3 bands, calibrated thresholds)
    ├── LOW    ─────────────────────────► Fallback + log ──► END
-   ├── MEDIUM ─► [5] Query Rewriter (LLM, structured output)
-   │                └─► [6] Rewrite Validator (deterministic, no LLM)
+   ├── MEDIUM ─► [5] Alias Expansion (deterministic, no LLM)
+   │                variants from the resolved topics' aliases;
+   │                original query always searched first
+   │                ├── index failure ──► Fallback + log (retrieval_failure)
+   │                ├── FINAL_ANSWER_THRESHOLD reached ───────┐ (0 rewrite calls)
+   │                ▼ still below                             │
+   │             [6] Query Rewriter (LLM, structured output)  │
+   │                └─► [7] Rewrite Validator (deterministic, no LLM)
    │                        rejected candidates never reach the index
-   │                └─► [7] Expanded Retrieval (max score per doc)
+   │                └─► [8] Expanded Retrieval (max score per doc,
+   │                        original + aliases + accepted rewrites)
    │                        ├── below FINAL_ANSWER_THRESHOLD ─► Fallback + log
-   │                        └── pass ──────────────┐
-   └── HIGH ──────────────────────────────────────►│
+   │                        └── pass ──────────────┐          │
+   └── HIGH ──────────────────────────────────────►│◄─────────┘
                                                    ▼
-                                        [8] Evidence Selector (deterministic)
+                                        [9] Evidence Selector (deterministic)
                                             policy authoritative, chat
                                             supplementary, canonical links
                                             resolved
                                             ├── no policy ──► Fallback + log
                                             ▼
-                                        [9] Reporter (LLM, structured claims)
+                                        [10] Reporter (LLM, structured claims)
                                             evidence is JSON-encoded;
                                             output is a candidate answer
                                             ├── no credential configured
                                             │    ──► Fallback + log
                                             │        (llm_not_configured)
                                             ▼
-                                       [10] Answer Contract Validator
+                                       [11] Answer Contract Validator
                                             (deterministic: claim text,
                                             per-claim sources, provenance,
                                             policy authority)
-                                            ├── VALID ──► [11] Renderer
+                                            ├── VALID ──► [12] Renderer
                                             │               ──► Answer + sources
                                             └── INVALID ──► Fallback + log
 ```
@@ -111,11 +118,14 @@ unvalidated model output can reach an employee, a log, or the returned state.
 insufficient**. Never add an LLM call to a path that a rule can decide.
 
 LLM call budget per request: blocked = 0, clear out-of-domain = 0,
-strong retrieval = 1 (Reporter), medium band = 2 (Rewriter + Reporter).
+unsupported in-domain topic = 0, strong retrieval = 1 (Reporter), medium band
+= 1 when the alias catalog settles the score, 2 otherwise (Rewriter +
+Reporter). On the 21-case calibration set the deterministic expansion cut the
+medium band's rewrite calls from 4 to 1.
 
 Credentials are checked at the LLM boundary, never at start-up: the zero-LLM
 routes above must stay demonstrable without a key. A key missing at the
-Rewriter degrades to original-query-only expansion; missing at the Reporter it
+Rewriter degrades to alias-expansion-only retrieval; missing at the Reporter it
 becomes its own reason code, so an unconfigured service is never reported to an
 employee as insufficient evidence.
 
@@ -131,6 +141,7 @@ employee as insufficient evidence.
 │   ├── schemas.py             # Document, RetrievedDocument, PipelineState, Route
 │   ├── graph.py               # LangGraph nodes + edges + routing functions
 │   ├── fallback.py            # Fixed fallback/refusal texts + reason codes
+│   ├── query_expansion.py     # Deterministic alias variants for the medium band
 │   ├── evidence_selector.py   # Policy-first answer-evidence selection
 │   ├── answer_renderer.py     # Validated claims -> public answer text
 │   ├── logging_utils.py       # JSONL telemetry: append writer + bounded reader
@@ -148,7 +159,8 @@ employee as insufficient evidence.
 │   └── retrievers/
 │       └── local_tfidf.py     # Character TF-IDF index + cosine scoring
 ├── data/docs/                 # 8 mock documents (Thai content, English filenames)
-├── eval/                      # Calibration / held-out / guardrail sets + runner
+├── eval/                      # Calibration / held-out / guardrail / near-domain
+│                              # / contract / live-answer sets + runner
 ├── logs/                      # Runtime JSONL output (git-ignored except .gitkeep)
 └── tests/                     # Offline unit + graph route tests
 ```
@@ -241,11 +253,19 @@ streamlit run app.py
 # Verify (must pass before any commit)
 python -m unittest discover -s tests -v
 python eval/run_eval.py --set calibration    # tuning only
-python eval/run_eval.py --set heldout        # reporting only, run last
+python eval/run_eval.py --set near_domain   # near-domain hard negatives + twins
+python eval/run_eval.py --set contracts     # citation + rewrite validator sets
+python eval/run_eval.py --set heldout       # reporting only, run last
 
 # Gate the same sets: --strict exits 1 on any case that contradicts its label
 python eval/run_eval.py --set guardrail --strict
 python eval/run_eval.py --set calibration --strict
+python eval/run_eval.py --set near_domain --strict
+
+# The one command here that spends money. It runs the real pipeline against
+# fact anchors from the corpus, needs OPENAI_API_KEY, and asks before it
+# starts. Every other set is free and offline.
+python eval/run_eval.py --set answers --live --runs 3
 ```
 
 Dependencies are **pinned** in `requirements.txt` from a clean virtualenv that
@@ -393,9 +413,17 @@ schema:
   "raw_retrieval_score": 0.06,
   "expanded_retrieval_score": null,
   "top_sources": ["HR-003"],
-  "rewritten_queries": []
+  "rewritten_queries": [],
+  "alias_query_count": 0
 }
 ```
+
+`alias_query_count` records how many deterministic alias variants the medium
+band searched, and is `0` on every other route. The variants themselves are not
+written: their text is recoverable from the topic catalog and the resolved
+topics, so quoting them in every medium-band record would grow an unrotated
+file to say nothing new. `rewritten_queries` keeps its old meaning exactly —
+executed *model* rewrites only.
 
 Reason codes (extend the enum, never invent ad-hoc strings):
 `prompt_injection`, `low_retrieval_score`, `rewrite_low_retrieval_score`,
@@ -460,7 +488,8 @@ not read at all, rather than read and then hidden.
   * rewriter: valid structured output, malformed provider response, timeout, failure falls back to original-query-only retrieval
   * reporter: structured output is returned unchanged, unparsed output raises, evidence is JSON-encoded, a document containing a closing delimiter cannot break its record, the document instruction never becomes a system message
   * citations: valid claims pass, a claim without a source fails, fabricated ID fails, real-but-not-selected ID fails, chat-only claim fails, broken structure fails
-  * graph: at least five routes — injection→refusal, low→fallback, high→answer, medium→rewrite→answer, fabricated citation→fallback — plus the invalid-answer routes, which must leave no public `answer` in the final state
+  * graph: at least six routes — injection→refusal, low→fallback, high→answer, medium→alias-expansion→answer with the rewrite seam never constructed, medium→rewrite→answer, fabricated citation→fallback — plus the invalid-answer routes, which must leave no public `answer` in the final state
+  * query expansion: variants are a pure function of query and resolved topics, no topic yields no variant, and a document ranked by a variant is labelled `alias` rather than `original`
   * logging: successful append returns `ok=True`, an unwritable path returns `ok=False` without raising, the failure line names the exception type but not the path or query, the bounded reader returns the newest N rows and counts a partial line without rendering it
   * credentials: a missing key raises at the agent boundary with no client constructed, blocked and low-score routes still finish, and the reporter route reports `llm_not_configured` rather than thin evidence
   * CLI: handled requests exit `0`, a start-up failure exits non-zero with the exception type only, and rendered text comes from the shared response selector
@@ -485,19 +514,45 @@ not read at all, rather than read and then hidden.
   rejection reason of the answer contract plus valid claim shapes.
 * `eval/rewrite_cases.json` holds labelled rewrite pairs, balanced between valid
   normalisations and each drift shape the validator must reject.
-* `eval/BASELINE.md` records the frozen pre-remediation baseline and the
-  post-remediation snapshot, so a metric change always has a reference point.
+* `eval/near_domain_cases.json` holds eligibility questions about items the
+  corpus has no rule for, each paired with a benign question one word away. The
+  benign half is not optional: a hard-negative set with no control can be passed
+  by refusing everything. It is a **separate file** from both retrieval splits so
+  the scope catalog can be extended and re-measured without touching the split
+  the thresholds were tuned on, or the split that may be run only once.
+* `eval/answer_cases.json` is the only set that reads an ANSWER. It runs the real
+  graph against fact anchors taken from the corpus, so it needs a credential and
+  costs money; `--live` is required, the runner prints the call count and asks
+  before spending, and a missing credential exits loudly rather than reporting
+  zero failures over zero measurements. Every required fact is verified to exist
+  in the document it names at load time — a fixture the corpus cannot support is
+  rejected, because otherwise a fixture bug reads as a model failure and the
+  obvious fix is to weaken the model's job. Pass `--transcript` so the checks can
+  be re-scored without paying for the calls again.
+* `eval/BASELINE.md` records the frozen pre-remediation baseline and every
+  snapshot since, so a metric change always has a reference point. Historical
+  blocks keep the metric names they were measured under; renaming them in place
+  would make the history agree with the present by editing the past.
 * Every case declares an unambiguous `expected_route` and `expected_sources`.
   "Answered or fallback, either is fine" is not a label.
 * Rewrites used during threshold sweeps come from `eval/cached_rewrites.json` so
   sweeps stay deterministic and free.
-* Reported metrics: Retrieval Hit@3, Answer-route Precision, Answer-route
-  Coverage, OOD Fallback Accuracy, Unsupported In-domain Fallback Accuracy,
-  Authoritative Evidence Coverage Rate, Rewrite Recovery Rate, Rewrite Intent
-  Preservation Rate, Injection Block Rate, Benign Pass Rate, Citation Provenance
-  Validity Rate, Claim Source Coverage Rate, Invalid Candidate Leakage Rate
-  (target zero). Precision is always reported beside Coverage: a pipeline that
-  answers almost nothing scores perfect precision.
+* Reported metrics: Retrieval Hit@3, Retrieval Recall@1, Retrieval MRR,
+  Answer-route Selection Precision, Answer-route Coverage, False Fallback Rate,
+  OOD Fallback Accuracy, Unsupported In-domain Fallback Accuracy, Overall
+  Fallback Accuracy, Authoritative Evidence Coverage Rate, Rewrite Recovery Rate,
+  Rewrite Intent Preservation Rate, Injection Block Rate, Benign Pass Rate,
+  Citation Provenance Validity Rate, Claim Source Coverage Rate, Invalid
+  Candidate Leakage Rate (target zero); and from the live set, Fact Recall,
+  Fact-Citation Alignment, Alien Number Rate, Forbidden Fact Rate, Correct
+  Refusal Rate, Route Stability.
+* **A metric's name is a claim about what it measures.** "Answer-route Selection
+  Precision" says selection because it scores route and retrieval and never reads
+  an answer. Each fallback category owns its denominator: pooling them let a set
+  with five in-domain unsupported cases report a nine-case "OOD" rate that no
+  out-of-domain measurement supported. Precision is always reported beside
+  Coverage, and False Fallback Rate beside both: a pipeline that answers almost
+  nothing scores perfect precision.
 * `--strict` turns any set into a gate: it exits 1 on a route that contradicts
   its label, an answerable case that missed every expected source, a citation or
   rewrite verdict mismatch, a missed attack, or a blocked benign lookalike.

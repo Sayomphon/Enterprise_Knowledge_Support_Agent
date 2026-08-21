@@ -2,9 +2,9 @@
 
 The writer accepts only the allowlisted fields of the AGENTS.md section 8
 schema: query text, reason code, the two retrieval scores, top source
-ids, and rewritten queries. Secrets, system prompts, and provider
-payloads cannot pass through this interface because the signature does
-not accept them.
+ids, rewritten queries, and the count of deterministic alias variants
+searched. Secrets, system prompts, and provider payloads cannot pass
+through this interface because the signature does not accept them.
 
 Writing stays best-effort -- a filesystem failure must never break a user
 request -- but it is no longer silent: the writer reports the outcome so
@@ -50,6 +50,7 @@ def log_fallback_event(
     expanded_retrieval_score: float | None,
     top_sources: Sequence[str],
     rewritten_queries: Sequence[str],
+    alias_query_count: int = 0,
     log_path: str | Path | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> LogWriteResult:
@@ -67,7 +68,15 @@ def log_fallback_event(
         expanded_retrieval_score: Top-1 expanded score, if reached.
         top_sources: Source ids of the retrieved documents, best first.
         rewritten_queries: Rewritten query variants, empty when no
-            rewrite ran.
+            rewrite ran. Model output only: the deterministic alias
+            variants are counted, not quoted, because their text is
+            recoverable from the topic catalog and repeating it in every
+            medium-band record would double the size of the sink to say
+            nothing new.
+        alias_query_count: How many alias variants the deterministic
+            expansion searched, zero outside the medium band. It is what
+            distinguishes "expansion found nothing" from "no expansion
+            ran" when reading a fallback back.
         log_path: Destination override used by tests so they never write
             into the real ``logs/`` directory; defaults to
             ``config.FALLBACK_LOG_PATH``.
@@ -90,6 +99,7 @@ def log_fallback_event(
             "expanded_retrieval_score": expanded_retrieval_score,
             "top_sources": list(top_sources),
             "rewritten_queries": list(rewritten_queries),
+            "alias_query_count": alias_query_count,
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:

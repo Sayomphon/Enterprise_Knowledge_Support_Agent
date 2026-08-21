@@ -1,0 +1,269 @@
+[
+  {
+    "id": "ans_normal_01",
+    "category": "normal",
+    "query": "พนักงานประจำมีสิทธิ์ลาพักร้อนกี่วันต่อปี",
+    "required_facts": [
+      {
+        "fact": "annual quota",
+        "patterns": ["10 ?วัน"],
+        "source_id": "HR-001"
+      }
+    ],
+    "forbidden_facts": [],
+    "required_policy_sources": ["HR-001"],
+    "expected_insufficient": false
+  },
+  {
+    "id": "ans_normal_02",
+    "category": "normal",
+    "query": "อายุงานครบ 3 ปีแล้วลาพักร้อนได้เพิ่มเป็นกี่วัน",
+    "required_facts": [
+      {
+        "fact": "quota after three years",
+        "patterns": ["12 ?วัน"],
+        "source_id": "HR-001"
+      }
+    ],
+    "forbidden_facts": [],
+    "required_policy_sources": ["HR-001"],
+    "expected_insufficient": false
+  },
+  {
+    "id": "ans_normal_03",
+    "category": "normal",
+    "query": "ลาพักร้อนไม่เกิน 5 วันต้องแจ้งล่วงหน้ากี่วันทำการ",
+    "required_facts": [
+      {
+        "fact": "advance notice for short leave",
+        "patterns": ["3 ?วันทำการ"],
+        "source_id": "HR-001"
+      }
+    ],
+    "forbidden_facts": [],
+    "required_policy_sources": ["HR-001"],
+    "expected_insufficient": false
+  },
+  {
+    "id": "ans_normal_04",
+    "category": "normal",
+    "query": "วันลาพักร้อนที่ใช้ไม่หมดยกไปปีหน้าได้กี่วันและต้องใช้ภายในเมื่อไหร่",
+    "required_facts": [
+      {
+        "fact": "carry-over cap",
+        "patterns": ["5 ?วันทำการ|ไม่เกิน 5"],
+        "source_id": "HR-001"
+      },
+      {
+        "fact": "carry-over deadline",
+        "patterns": ["ไตรมาสแรก"],
+        "source_id": "HR-001"
+      }
+    ],
+    "forbidden_facts": [],
+    "required_policy_sources": ["HR-001"],
+    "expected_insufficient": false
+  },
+  {
+    "id": "ans_normal_05",
+    "category": "normal",
+    "query": "ลาป่วยต้องแจ้งหัวหน้าทีมภายในเวลากี่โมง",
+    "required_facts": [
+      {
+        "fact": "sick leave notification deadline",
+        "patterns": ["10[:.]00"],
+        "source_id": "HR-002"
+      }
+    ],
+    "forbidden_facts": [],
+    "required_policy_sources": ["HR-002"],
+    "expected_insufficient": false
+  },
+  {
+    "id": "ans_normal_06",
+    "category": "normal",
+    "query": "ลาป่วยติดต่อกันกี่วันต้องแนบใบรับรองแพทย์",
+    "required_facts": [
+      {
+        "fact": "medical certificate threshold",
+        "patterns": ["3 ?วันทำการ"],
+        "source_id": "HR-002"
+      }
+    ],
+    "forbidden_facts": [],
+    "required_policy_sources": ["HR-002"],
+    "expected_insufficient": false
+  },
+  {
+    "id": "ans_normal_07",
+    "category": "normal",
+    "query": "ทำงานจากที่บ้านได้สัปดาห์ละกี่วัน",
+    "required_facts": [
+      {
+        "fact": "wfh weekly cap",
+        "patterns": ["2 ?วัน"],
+        "source_id": "HR-003"
+      }
+    ],
+    "forbidden_facts": [],
+    "required_policy_sources": ["HR-003"],
+    "expected_insufficient": false
+  },
+  {
+    "id": "ans_normal_08",
+    "category": "normal",
+    "query": "ต้องยื่นเบิกค่าใช้จ่ายภายในกี่วันนับจากวันที่จ่ายเงิน",
+    "required_facts": [
+      {
+        "fact": "claim filing window",
+        "patterns": ["30 ?วัน"],
+        "source_id": "FIN-001"
+      },
+      {
+        "fact": "claim channel",
+        "patterns": ["Expense Portal"],
+        "source_id": "FIN-001"
+      }
+    ],
+    "forbidden_facts": [],
+    "required_policy_sources": ["FIN-001"],
+    "expected_insufficient": false
+  },
+  {
+    "id": "ans_multi_01",
+    "category": "multi_condition",
+    "query": "ทำ OT ดึกแล้วนั่งแท็กซี่กลับบ้าน ต้องเลิกงานหลังกี่โมงถึงเบิกได้ และต้องแนบอะไร",
+    "required_facts": [
+      {
+        "fact": "overtime taxi cut-off time",
+        "patterns": ["22[:.]00"],
+        "source_id": "FIN-001"
+      },
+      {
+        "fact": "receipt requirement",
+        "patterns": ["ใบเสร็จ"],
+        "source_id": "FIN-001"
+      }
+    ],
+    "forbidden_facts": [],
+    "required_policy_sources": ["FIN-001"],
+    "expected_insufficient": false
+  },
+  {
+    "id": "ans_multi_02",
+    "category": "multi_condition",
+    "query": "ใบเสร็จหายแต่ยอดไม่เกิน 500 บาท ต้องทำอย่างไรถึงจะเบิกได้",
+    "required_facts": [
+      {
+        "fact": "missing receipt ceiling",
+        "patterns": ["500 ?บาท"],
+        "source_id": "FIN-002"
+      },
+      {
+        "fact": "substitute document",
+        "patterns": ["แบบฟอร์มรับรองค่าใช้จ่าย"],
+        "source_id": "FIN-002"
+      }
+    ],
+    "forbidden_facts": [],
+    "required_policy_sources": ["FIN-002"],
+    "expected_insufficient": false
+  },
+  {
+    "id": "ans_multi_03",
+    "category": "multi_condition",
+    "query": "ใบเสร็จหายและยอดเกิน 500 บาท ใครเป็นคนอนุมัติ",
+    "required_facts": [
+      {
+        "fact": "finance manager approval",
+        "patterns": ["ผู้จัดการฝ่ายการเงิน"],
+        "source_id": "FIN-002"
+      }
+    ],
+    "forbidden_facts": [],
+    "required_policy_sources": ["FIN-002"],
+    "expected_insufficient": false
+  },
+  {
+    "id": "ans_multi_04",
+    "category": "multi_condition",
+    "query": "ใบเสร็จอิเล็กทรอนิกส์ใช้แทนใบเสร็จตัวจริงได้ไหม แล้วสลิปโอนเงินอย่างเดียวใช้ได้หรือเปล่า",
+    "required_facts": [
+      {
+        "fact": "e-receipt accepted",
+        "patterns": ["e-?receipt|อิเล็กทรอนิกส์"],
+        "source_id": "FIN-002"
+      },
+      {
+        "fact": "transfer slip alone is not enough",
+        "patterns": ["สลิปโอนเงิน"],
+        "source_id": "FIN-002"
+      }
+    ],
+    "forbidden_facts": [],
+    "required_policy_sources": ["FIN-002"],
+    "expected_insufficient": false
+  },
+  {
+    "id": "ans_chat_01",
+    "category": "ambiguous_chat",
+    "query": "เมื่อวานไปหาลูกค้า จ่ายค่าที่จอดรถที่ตู้อัตโนมัติเอง ใบเสร็จก็ไม่มี เบิกได้เลยไหม",
+    "required_facts": [
+      {
+        "fact": "missing receipt route",
+        "patterns": ["แบบฟอร์มรับรองค่าใช้จ่าย|สำเนาใบเสร็จ"],
+        "source_id": "FIN-002"
+      }
+    ],
+    "forbidden_facts": [
+      {
+        "fact": "unattended kiosk case confirmed as claimable",
+        "patterns": ["ตู้อัตโนมัติ[^.\\n]{0,40}(เบิกได้|เคลมได้|ได้เลย)"]
+      }
+    ],
+    "required_policy_sources": ["FIN-002"],
+    "expected_insufficient": false
+  },
+  {
+    "id": "ans_chat_02",
+    "category": "ambiguous_chat",
+    "query": "ยื่นเบิกช้าเกิน 30 วันแล้วระบบยังรับไหม",
+    "required_facts": [
+      {
+        "fact": "filing deadline",
+        "patterns": ["30 ?วัน"],
+        "source_id": "FIN-001"
+      }
+    ],
+    "forbidden_facts": [],
+    "required_policy_sources": ["FIN-001"],
+    "expected_insufficient": false
+  },
+  {
+    "id": "ans_refusal_01",
+    "category": "correct_refusal",
+    "query": "ขอเบิกค่าโทรศัพท์มือถือผ่าน Expense Portal ได้ไหม",
+    "required_facts": [],
+    "forbidden_facts": [],
+    "required_policy_sources": [],
+    "expected_insufficient": true
+  },
+  {
+    "id": "ans_refusal_02",
+    "category": "correct_refusal",
+    "query": "ขับรถตัวเองไปพบลูกค้า เบิกค่าน้ำมันได้ไหม",
+    "required_facts": [],
+    "forbidden_facts": [],
+    "required_policy_sources": [],
+    "expected_insufficient": true
+  },
+  {
+    "id": "ans_refusal_03",
+    "category": "correct_refusal",
+    "query": "ลาคลอดต้องใช้ใบรับรองแพทย์ไหม",
+    "required_facts": [],
+    "forbidden_facts": [],
+    "required_policy_sources": [],
+    "expected_insufficient": true
+  }
+]

@@ -132,12 +132,19 @@ DIRECT_ANSWER_THRESHOLD: float = _env_float("DIRECT_ANSWER_THRESHOLD", "0.19")
 # case an answer. The hard negative is now stopped deterministically by
 # scope validation before the rewrite branch, so the threshold no longer
 # has to arbitrate between them: at 0.21 every labelled-answerable case
-# routes to "answered" (coverage 12/12) with precision still 12/12, and
-# 0.21 keeps a margin above the highest expanded score observed for an
-# unsupported in-domain case (0.1884). The trade-off is explicit --
-# precision on this band now rests on the scope gate rather than on the
-# score alone, so weakening the scope catalog would weaken this threshold
-# too.
+# routes to "answered" (coverage 12/12) with precision still 12/12.
+#
+# Re-swept 2026-08-21 after deterministic alias expansion moved in front
+# of the rewrite branch, because that stage raises every medium-band
+# expanded score. The number is unchanged and the derivation is not: no
+# labelled-fallback case reaches this gate at all any more -- all three
+# medium-band ones (cal_ood_04, cal_unsupported_02/03, raw 0.1773-0.1884)
+# are stopped by the scope gate before any expansion runs -- so the gate
+# is now sized only against the answerable side, whose weakest expanded
+# score is cal_noisy_02 at 0.2176. Held-out data was not consulted. The
+# trade-off is explicit and unchanged: precision on this band rests on
+# the scope gate rather than on the score alone, so weakening the scope
+# catalog would weaken this threshold too.
 FINAL_ANSWER_THRESHOLD: float = _env_float("FINAL_ANSWER_THRESHOLD", "0.21")
 
 # Scope-gate alias similarity, calibrated 2026-08-20 against the 21-case

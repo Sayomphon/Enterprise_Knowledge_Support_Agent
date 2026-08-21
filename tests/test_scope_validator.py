@@ -58,6 +58,58 @@ UNSUPPORTED_QUERIES = (
     ),
 )
 
+# Eligibility questions about expense items this corpus has no rule for,
+# each paired with a supported question one word away from it. The
+# reimbursement PROCESS policy describes how to file a claim and never
+# says which items qualify, so its wording used to carry these past the
+# gate and buy them a confident yes. The benign half is the control: an
+# alias that raises the block rate by refusing real questions is a
+# regression, not a fix.
+NEAR_DOMAIN_PAIRS = (
+    (
+        "phone",
+        "ขั้นตอนยื่นเบิกค่าโทรศัพท์มือถือผ่าน Expense Portal",
+        "ขั้นตอนการเบิกค่าแท็กซี่หลังทำ OT ต้องทำอย่างไร",
+        "reimbursement_process",
+    ),
+    (
+        "internet",
+        "ขอเบิกค่าอินเทอร์เน็ตทำงานจากที่บ้านผ่าน Expense Portal ได้ไหม",
+        "ทำงานจากที่บ้านได้สัปดาห์ละกี่วัน",
+        "work_from_home",
+    ),
+    (
+        "office_equipment",
+        "ค่าอุปกรณ์สำนักงานเบิกได้ไหม",
+        "ใบเสร็จหายต้องทำอย่างไรถึงจะเบิกได้",
+        "receipt_policy",
+    ),
+    (
+        "training_expense",
+        "ขอเบิกค่าอบรมภายนอกต้องยื่นเอกสารอะไรบ้าง",
+        "เบิกค่าที่จอดรถตอนไปหาลูกค้าได้ป่าว",
+        "reimbursement_process",
+    ),
+    (
+        "per_diem",
+        "เบี้ยเลี้ยงเดินทางต่างจังหวัดได้วันละเท่าไหร่",
+        "ค่าเดินทางไปพบลูกค้าต่างจังหวัดเบิกยังไง",
+        "reimbursement_process",
+    ),
+    (
+        "business_leave",
+        "ลากิจใช้สิทธิ์ได้กี่วันต่อปี",
+        "ลาพักผ่อนใช้สิทธิ์ได้กี่วันต่อปี",
+        "annual_leave",
+    ),
+    (
+        "fuel_mileage",
+        "ขับรถตัวเองไปพบลูกค้าเบิกค่าน้ำมันได้ไหม",
+        "ขับแท็กซี่กลับบ้านหลัง OT เบิกค่าแท็กซี่ได้ไหม",
+        "reimbursement_process",
+    ),
+)
+
 UNDER_SPECIFIED_QUERY = "ลาได้กี่วัน"
 OUT_OF_DOMAIN_QUERY = "Bitcoin วันนี้ราคาเท่าไหร่"
 
@@ -109,6 +161,42 @@ class TestUnsupportedTopics(unittest.TestCase):
 
         self.assertFalse(decision.supported)
         self.assertEqual(decision.reason, "unsupported_topic")
+
+
+class TestNearDomainExpenseItems(unittest.TestCase):
+    """Item eligibility is refused; the process questions still answer.
+
+    Both halves are asserted together on purpose. The catalog is the only
+    thing separating "how do I claim a taxi" from "can I claim my phone
+    bill", and the two are lexically almost identical, so an alias wide
+    enough to catch the second will catch the first if nobody checks.
+    """
+
+    def test_unsupported_expense_items_are_refused(self) -> None:
+        for label, attack, _benign, _topic in NEAR_DOMAIN_PAIRS:
+            with self.subTest(case=label):
+                decision = validate_scope(attack)
+
+                self.assertFalse(decision.supported)
+                self.assertEqual(decision.reason, "unsupported_topic")
+                self.assertEqual(decision.topics, ())
+
+    def test_the_benign_twin_still_resolves_its_topic(self) -> None:
+        for label, _attack, benign, topic in NEAR_DOMAIN_PAIRS:
+            with self.subTest(case=label):
+                decision = validate_scope(benign)
+
+                self.assertTrue(decision.supported)
+                self.assertIn(topic, decision.topics)
+
+    def test_fuel_aliases_do_not_swallow_the_travel_wording(self) -> None:
+        # "kha-doen-thang" (travel) is a SUPPORTED alias: taxi fares after
+        # overtime are covered. A fuel alias widened towards it would
+        # refuse them, so the narrow spelling is load-bearing.
+        decision = validate_scope("ค่าเดินทางหลังทำ OT เบิกได้ไหม")
+
+        self.assertTrue(decision.supported)
+        self.assertIn("reimbursement_process", decision.topics)
 
 
 class TestCatalogContract(unittest.TestCase):

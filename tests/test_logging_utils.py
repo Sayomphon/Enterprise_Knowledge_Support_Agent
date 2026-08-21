@@ -32,6 +32,7 @@ LOG_SCHEMA_KEYS = [
     "expanded_retrieval_score",
     "top_sources",
     "rewritten_queries",
+    "alias_query_count",
 ]
 
 

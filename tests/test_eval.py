@@ -7,23 +7,34 @@ that turns a report into an exit code. Everything here is offline and
 calls no LLM, like the harness it tests.
 """
 
+import contextlib
+import io
+import re
 import unittest
 from unittest import mock
 
 from eval.run_eval import (
+    AnswerCase,
+    AnswerRun,
     EvalFixtureError,
+    FactAnchor,
     _MIN_GUARDRAIL_CASES_PER_TYPE,
     Prediction,
     RetrievalCase,
+    _best_expected_rank,
     _exit_code,
     _candidate_answer,
     _promoted_answer,
     _ratio,
     build_eval_graph,
+    evaluate_contracts,
     evaluate_guardrail,
+    evaluate_retrieval,
+    load_answer_cases,
     load_retrieval_cases,
     main,
     predict,
+    score_answer,
 )
 from src import config
 from src.schemas import AnswerClaim, Document, GroundedAnswer, RetrievedDocument
@@ -127,9 +138,20 @@ class TestFixtureSchemaValidation(unittest.TestCase):
             self._load([_raw_case(), _raw_case()])
 
     def test_shipped_fixtures_satisfy_their_own_schema(self) -> None:
-        for set_name in ("calibration", "heldout"):
+        for set_name in ("calibration", "heldout", "near_domain"):
             with self.subTest(set_name=set_name):
                 self.assertTrue(load_retrieval_cases(set_name))
+
+    def test_the_near_domain_set_keeps_its_benign_control(self) -> None:
+        # A hard-negative set with no benign half can be passed by
+        # refusing everything, which is not a working pipeline. The
+        # AGENTS.md section 10 pairing rule is asserted on the fixture
+        # rather than trusted.
+        cases = load_retrieval_cases("near_domain")
+        answerable = [c for c in cases if c.expected_route == "answered"]
+
+        self.assertGreaterEqual(len(answerable), 5)
+        self.assertGreaterEqual(len(cases) - len(answerable), 5)
 
 
 class TestRatioFormatting(unittest.TestCase):
@@ -351,6 +373,431 @@ class TestPredictRouting(unittest.TestCase):
             predict(case, graph, {})
 
 
+def _policy(source_id: str, score: float) -> RetrievedDocument:
+    """Build one annual-leave policy candidate at a chosen score."""
+    return RetrievedDocument(
+        source_id=source_id,
+        title=source_id,
+        source_type="policy",
+        content="T",
+        score=score,
+        authority="authoritative",
+        status="active",
+        topics=("annual_leave",),
+        matched_query="q",
+        matched_query_type="original",
+    )
+
+
+class TestRankMetrics(unittest.TestCase):
+    """Rank quality is scored on a ranking whose answer is known.
+
+    Hit@3 passes a two-source case that surfaced one document at rank 3,
+    so it cannot tell a first-place retrieval from a barely-surviving
+    one. These fix what the rank metrics count before the shipped
+    fixtures are allowed to quote them.
+    """
+
+    def _rank(self, expected: tuple[str, ...]) -> int | None:
+        """Rank one expectation against a fixed three-document ranking."""
+        case = RetrievalCase(
+            id="t",
+            category="normal",
+            query="ลาพักร้อนได้กี่วัน",
+            expected_route="answered",
+            expected_sources=expected,
+        )
+        retriever = StubRetriever(
+            [
+                _policy("HR-001", 0.5),
+                _policy("HR-009", 0.4),
+                _policy("HR-010", 0.3),
+            ]
+        )
+        prediction = Prediction(
+            route="answered",
+            band="high",
+            raw_score=0.5,
+            expanded_score=None,
+            retrieved_ids=("HR-001", "HR-009", "HR-010"),
+            cache_hit=None,
+            searched_queries=("ลาพักร้อนได้กี่วัน",),
+        )
+        return _best_expected_rank(case, prediction, retriever, 3)
+
+    def test_top_ranked_expected_source_is_rank_one(self) -> None:
+        self.assertEqual(self._rank(("HR-001",)), 1)
+
+    def test_a_lower_ranked_expected_source_keeps_its_position(self) -> None:
+        self.assertEqual(self._rank(("HR-010",)), 3)
+
+    def test_the_best_placed_expected_source_wins(self) -> None:
+        # expected_sources is a set of acceptable documents, not a
+        # priority order: the fixtures spell some cases chat-first and
+        # others policy-first, so listing order must not move the metric.
+        self.assertEqual(self._rank(("HR-010", "HR-001")), 1)
+        self.assertEqual(self._rank(("HR-001", "HR-010")), 1)
+
+    def test_a_source_the_search_never_surfaced_has_no_rank(self) -> None:
+        self.assertIsNone(self._rank(("ZZ-999",)))
+
+
+class TestRetrievalMetricDenominators(unittest.TestCase):
+    """Every rate is divided by the cases that actually back it.
+
+    "OOD Fallback Accuracy" used to count every fallback-labelled case,
+    so a set with five in-domain unsupported cases reported a nine-case
+    out-of-domain rate that no out-of-domain measurement supported.
+    """
+
+    @staticmethod
+    def _report(set_name: str) -> str:
+        """Capture one shipped retrieval report as text."""
+        from src.ingestion.loader import load_documents
+        from src.retrievers.local_tfidf import LocalTfidfRetriever
+
+        documents = load_documents()
+        documents_by_id = {
+            document.source_id: document for document in documents
+        }
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            evaluate_retrieval(
+                set_name,
+                LocalTfidfRetriever(documents),
+                documents_by_id,
+                False,
+            )
+        return buffer.getvalue()
+
+    def _counts(self, report: str, metric: str) -> tuple[int, int]:
+        """Read one metric's passed/total pair out of a report."""
+        match = re.search(
+            rf"^\s*{re.escape(metric)}:\s+\S+ \((\d+)/(\d+)\)$",
+            report,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(match, f"{metric} missing from report")
+        return int(match[1]), int(match[2])
+
+    def test_out_of_domain_rate_counts_only_ood_cases(self) -> None:
+        for set_name, expected in (("calibration", 4), ("heldout", 3)):
+            with self.subTest(set_name=set_name):
+                _, total = self._counts(
+                    self._report(set_name), "OOD Fallback Accuracy"
+                )
+                self.assertEqual(total, expected)
+
+    def test_unsupported_and_overall_keep_separate_denominators(
+        self,
+    ) -> None:
+        report = self._report("calibration")
+        self.assertEqual(
+            self._counts(report, "Unsupported In-domain Fallback Accuracy"),
+            (5, 5),
+        )
+        self.assertEqual(
+            self._counts(report, "Overall Fallback Accuracy"), (9, 9)
+        )
+
+    def test_false_fallback_rate_complements_coverage(self) -> None:
+        report = self._report("heldout")
+        covered, answerable = self._counts(report, "Answer-route Coverage")
+        refused, total = self._counts(report, "False Fallback Rate")
+
+        self.assertEqual(total, answerable)
+        self.assertEqual(refused, answerable - covered)
+
+    def test_contract_rates_are_not_reprinted_per_retrieval_set(
+        self,
+    ) -> None:
+        # The same three contract rates under every retrieval set made one
+        # measurement read as several in eval/RESULTS.md.
+        report = self._report("calibration")
+
+        self.assertNotIn("Citation Provenance Validity Rate", report)
+        self.assertNotIn("Rewrite Intent Preservation Rate", report)
+
+
+class TestContractSet(unittest.TestCase):
+    """The contract fixtures report on their own, and still gate."""
+
+    def test_contract_set_reports_its_rates(self) -> None:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            failures = evaluate_contracts()
+
+        self.assertEqual(failures, 0)
+        self.assertIn("Citation Provenance Validity Rate", buffer.getvalue())
+
+    def test_silent_scoring_prints_nothing_but_still_counts(self) -> None:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            failures = evaluate_contracts(report=False)
+
+        self.assertEqual(failures, 0)
+        self.assertEqual(buffer.getvalue(), "")
+
+
+class TestAnswerCaseFixture(unittest.TestCase):
+    """The answer set is refused when the corpus cannot support it."""
+
+    def test_the_shipped_answer_set_is_backed_by_the_corpus(self) -> None:
+        from src.ingestion.loader import load_documents
+
+        documents = {
+            document.source_id: document for document in load_documents()
+        }
+        cases = load_answer_cases(documents)
+
+        self.assertGreaterEqual(len(cases), 12)
+        self.assertEqual(
+            {case.category for case in cases},
+            {"normal", "multi_condition", "ambiguous_chat", "correct_refusal"},
+        )
+
+    def _load(self, raw_cases: list[dict], documents=None):
+        """Load answer records through a patched JSON reader."""
+        with mock.patch("eval.run_eval._load_json", return_value=raw_cases):
+            return load_answer_cases(documents)
+
+    @staticmethod
+    def _raw_answer_case(**overrides: object) -> dict:
+        case = {
+            "id": "ans_01",
+            "category": "normal",
+            "query": "ลาพักร้อนได้กี่วัน",
+            "required_facts": [
+                {"fact": "quota", "patterns": ["10 ?วัน"], "source_id": "HR-001"}
+            ],
+        }
+        case.update(overrides)
+        return case
+
+    def test_an_unknown_category_is_rejected(self) -> None:
+        with self.assertRaises(EvalFixtureError):
+            self._load([self._raw_answer_case(category="สงสัย")])
+
+    def test_an_anchor_without_patterns_is_rejected(self) -> None:
+        # An anchor that matches nothing would score every answer as a
+        # miss and read as a model failure.
+        with self.assertRaises(EvalFixtureError):
+            self._load(
+                [
+                    self._raw_answer_case(
+                        required_facts=[
+                            {"fact": "quota", "patterns": [], "source_id": "X"}
+                        ]
+                    )
+                ]
+            )
+
+    def test_a_refusal_case_may_not_also_require_facts(self) -> None:
+        with self.assertRaises(EvalFixtureError):
+            self._load(
+                [
+                    self._raw_answer_case(
+                        category="correct_refusal", expected_insufficient=True
+                    )
+                ]
+            )
+
+    def test_a_fact_absent_from_its_own_source_is_rejected(self) -> None:
+        # Otherwise a fixture bug is reported as a wrong answer, and the
+        # obvious "fix" is to weaken the model's job.
+        documents = {
+            "HR-001": Document(
+                source_id="HR-001",
+                title="Annual leave policy",
+                source_type="policy",
+                content="ลาพักร้อน 10 วันทำการ",
+                authority="authoritative",
+                status="active",
+                topics=("annual_leave",),
+            )
+        }
+        absent = self._raw_answer_case(
+            required_facts=[
+                {"fact": "quota", "patterns": ["99 ?วัน"], "source_id": "HR-001"}
+            ]
+        )
+
+        with self.assertRaises(EvalFixtureError):
+            self._load([absent], documents)
+
+
+class TestAnswerScoring(unittest.TestCase):
+    """The answer checkers, exercised on invented answers and no key.
+
+    Every check is string or number containment against the corpus, so
+    these run offline and pin the scoring rules the live run depends on.
+    """
+
+    QUOTA = FactAnchor(
+        fact="quota", patterns=(re.compile("10 ?วัน"),), source_id="HR-001"
+    )
+
+    def _case(self, **overrides: object) -> AnswerCase:
+        fields = {
+            "id": "ans_01",
+            "category": "normal",
+            "query": "ลาพักร้อนได้กี่วัน",
+            "required_facts": (self.QUOTA,),
+        }
+        fields.update(overrides)
+        return AnswerCase(**fields)
+
+    @staticmethod
+    def _run(answer: str, claims, evidence, route: str = "answered"):
+        return AnswerRun(
+            route=route, answer=answer, claims=claims, evidence=evidence
+        )
+
+    def test_a_stated_fact_cited_to_its_own_document_is_aligned(self) -> None:
+        run = score_answer(
+            self._case(),
+            self._run(
+                "ลาพักร้อนได้ 10 วันทำการ [HR-001]",
+                claims=(("ลาพักร้อนได้ 10 วันทำการ", ("HR-001",)),),
+                evidence=(("HR-001", "พนักงานมีสิทธิ์ลาพักร้อน 10 วันทำการ"),),
+            ),
+        )
+
+        self.assertEqual(run.found_facts, ("quota",))
+        self.assertEqual(run.aligned_facts, ("quota",))
+
+    def test_a_right_fact_under_the_wrong_citation_is_not_aligned(
+        self,
+    ) -> None:
+        # Provenance validation passes this: HR-002 really is in the
+        # evidence. It just does not say what the claim beside it says.
+        run = score_answer(
+            self._case(),
+            self._run(
+                "ลาพักร้อนได้ 10 วันทำการ [HR-002]",
+                claims=(("ลาพักร้อนได้ 10 วันทำการ", ("HR-002",)),),
+                evidence=(
+                    ("HR-001", "พนักงานมีสิทธิ์ลาพักร้อน 10 วันทำการ"),
+                    ("HR-002", "ลาป่วยไม่เกิน 30 วันทำการ"),
+                ),
+            ),
+        )
+
+        self.assertEqual(run.found_facts, ("quota",))
+        self.assertEqual(run.aligned_facts, ())
+
+    def test_a_missing_fact_is_neither_found_nor_aligned(self) -> None:
+        run = score_answer(
+            self._case(),
+            self._run(
+                "กรุณาติดต่อฝ่ายบุคคล",
+                claims=(("กรุณาติดต่อฝ่ายบุคคล", ("HR-001",)),),
+                evidence=(("HR-001", "พนักงานมีสิทธิ์ลาพักร้อน 10 วันทำการ"),),
+            ),
+        )
+
+        self.assertEqual(run.found_facts, ())
+        self.assertEqual(run.aligned_facts, ())
+
+    def test_a_number_from_neither_evidence_nor_question_is_alien(
+        self,
+    ) -> None:
+        run = score_answer(
+            self._case(),
+            self._run(
+                "ลาพักร้อนได้ 10 วันทำการ และสะสมได้ 7 วัน [HR-001]",
+                claims=(("ลาพักร้อนได้ 10 วันทำการ", ("HR-001",)),),
+                evidence=(("HR-001", "พนักงานมีสิทธิ์ลาพักร้อน 10 วันทำการ"),),
+            ),
+        )
+
+        self.assertEqual(run.alien_numbers, ("7",))
+
+    def test_a_rendered_citation_id_is_not_an_alien_number(self) -> None:
+        # The first live run reported 38 of 51 answers as containing an
+        # invented number. Every one of them was the "001" inside the
+        # renderer's own "[HR-001]" marker, which is emitted from ids the
+        # validator already approved -- the model never wrote it.
+        run = score_answer(
+            self._case(),
+            self._run(
+                "ลาพักร้อนได้ 10 วันทำการ [HR-001]",
+                claims=(("ลาพักร้อนได้ 10 วันทำการ", ("HR-001",)),),
+                evidence=(("HR-001", "พนักงานมีสิทธิ์ลาพักร้อน 10 วันทำการ"),),
+            ),
+        )
+
+        self.assertEqual(run.alien_numbers, ())
+
+    def test_a_number_the_employee_typed_is_not_alien(self) -> None:
+        # The exemption exists so an answer may repeat the question's own
+        # figure without being scored as an invention.
+        run = score_answer(
+            self._case(query="ลา 2 วันได้ไหม"),
+            self._run(
+                "ลา 2 วันได้ หากมีสิทธิ์ 10 วันคงเหลือ",
+                claims=(("ลา 2 วันได้", ("HR-001",)),),
+                evidence=(("HR-001", "พนักงานมีสิทธิ์ลาพักร้อน 10 วันทำการ"),),
+            ),
+        )
+
+        self.assertEqual(run.alien_numbers, ())
+
+    def test_a_forbidden_fact_is_reported(self) -> None:
+        forbidden = FactAnchor(
+            fact="kiosk confirmed",
+            patterns=(re.compile("ตู้อัตโนมัติ[^.\\n]{0,40}เบิกได้"),),
+        )
+        run = score_answer(
+            self._case(required_facts=(), forbidden_facts=(forbidden,)),
+            self._run(
+                "กรณีตู้อัตโนมัติสามารถเบิกได้ทันที",
+                claims=(("กรณีตู้อัตโนมัติสามารถเบิกได้ทันที", ("FIN-002",)),),
+                evidence=(("FIN-002", "ยอดไม่เกิน 500 บาท"),),
+            ),
+        )
+
+        self.assertEqual(run.forbidden_hits, ("kiosk confirmed",))
+
+    def test_a_refused_case_scores_no_facts_and_no_alien_numbers(
+        self,
+    ) -> None:
+        run = score_answer(
+            self._case(required_facts=(), expected_insufficient=True),
+            self._run("", claims=(), evidence=(), route="fallback"),
+        )
+
+        self.assertEqual(run.found_facts, ())
+        self.assertEqual(run.alien_numbers, ())
+
+
+class TestLiveSetGuards(unittest.TestCase):
+    """The live set refuses to look green without actually running."""
+
+    def test_the_answer_set_requires_an_explicit_live_flag(self) -> None:
+        with self.assertRaises(SystemExit):
+            main(["--set", "answers"])
+
+    def test_a_missing_credential_exits_instead_of_skipping(self) -> None:
+        with mock.patch(
+            "src.config.has_llm_credential", return_value=False
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                main(["--set", "answers", "--live", "--yes"])
+
+        self.assertIn("OPENAI_API_KEY", str(raised.exception))
+
+    def test_declining_the_cost_prompt_spends_nothing(self) -> None:
+        with mock.patch("src.config.has_llm_credential", return_value=True):
+            with mock.patch("builtins.input", return_value="n"):
+                with mock.patch("eval.run_eval.build_graph") as graph:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        with self.assertRaises(SystemExit):
+                            main(["--set", "answers", "--live"])
+
+        self.assertEqual(graph.call_count, 0)
+
+
 class TestStrictGateEndToEnd(unittest.TestCase):
     """The shipped fixtures decide the documented exit codes."""
 
@@ -361,6 +808,9 @@ class TestStrictGateEndToEnd(unittest.TestCase):
 
     def test_guardrail_set_passes_its_strict_gate(self) -> None:
         self.assertEqual(self._run(["--set", "guardrail", "--strict"]), 0)
+
+    def test_contract_set_passes_its_strict_gate(self) -> None:
+        self.assertEqual(self._run(["--set", "contracts", "--strict"]), 0)
 
     def test_reporting_mode_always_exits_zero(self) -> None:
         self.assertEqual(self._run(["--set", "guardrail"]), 0)

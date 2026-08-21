@@ -42,10 +42,13 @@ KnowledgeTopic = Literal[
 KNOWLEDGE_TOPICS: tuple[KnowledgeTopic, ...] = get_args(KnowledgeTopic)
 
 # Which of the searched queries a document matched best. Expanded
-# retrieval max-pools over the original query plus its rewrites, so this
+# retrieval max-pools over the original query plus its variants, so this
 # records whether a high score came from what the employee actually wrote
-# or from a machine-generated variant (remediation plan Finding 3).
-MatchedQueryType = Literal["original", "rewrite"]
+# or from a generated one (remediation plan Finding 3). The two kinds of
+# variant are kept apart because their trust differs: an "alias" variant
+# is built from this repository's own topic catalog, while a "rewrite" is
+# model output that had to pass the rewrite validator first.
+MatchedQueryType = Literal["original", "alias", "rewrite"]
 
 # Terminal or intermediate branch of the pipeline graph (AGENTS.md section 16).
 Route = Literal[
@@ -329,6 +332,14 @@ class PipelineState(TypedDict):
     scope_topics: NotRequired[list[str]]
     scope_score: NotRequired[float]
     scope_reason: NotRequired[str]
+
+    # Deterministic search variants built from the resolved topics'
+    # aliases, before any model is asked for one. Populated on the medium
+    # band only, and empty when no alias matched. They are configuration
+    # data rather than model output, so they do not pass through the
+    # rewrite validator -- which is also why they are kept in their own
+    # field instead of being mixed into ``rewritten_queries``.
+    alias_expansion_queries: NotRequired[list[str]]
 
     # Populated only on the medium-band rewrite path.
     rewritten_queries: NotRequired[list[str]]

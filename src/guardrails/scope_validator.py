@@ -115,6 +115,50 @@ UNSUPPORTED_TOPIC_ALIASES: dict[str, tuple[str, ...]] = {
         "ค่าที่พัก",
         "accommodation",
     ),
+    # The groups below close a verified gap rather than an imagined one:
+    # an eligibility question about an expense item the corpus has no
+    # rule for ("can I claim my phone bill through the Expense Portal")
+    # scored above the direct threshold on the reimbursement PROCESS
+    # policy, which describes how to file a claim and says nothing about
+    # which items qualify. The process wording carried the question past
+    # the gate, and the answer would have been a confident yes drawn from
+    # a document that never granted it.
+    "phone_reimbursement": (
+        "ค่าโทรศัพท์",
+        "ค่าโทรศัพท์มือถือ",
+        "ค่ามือถือ",
+    ),
+    "internet_reimbursement": (
+        "ค่าอินเทอร์เน็ต",
+        "ค่าเน็ต",
+        "ค่า wifi",
+    ),
+    "office_equipment": (
+        "ค่าอุปกรณ์สำนักงาน",
+        "อุปกรณ์ทำงาน",
+        "ค่าโต๊ะเก้าอี้",
+    ),
+    "training_expense": (
+        "ค่าอบรม",
+        "ค่าสัมมนา",
+        "ค่าคอร์สเรียน",
+    ),
+    # Per diem is a daily allowance, not the meal receipt case above; it
+    # gets its own group so a future policy can be added for one without
+    # implying the other.
+    "per_diem": (
+        "เบี้ยเลี้ยง",
+        "per diem",
+    ),
+    "business_leave": ("ลากิจ",),
+    # Deliberately narrow. "kha-nam-man" (fuel) must not be widened
+    # towards "kha-doen-thang" (travel), which is a SUPPORTED alias of
+    # the reimbursement process: taxi fares after overtime are covered,
+    # and an alias that swallowed the travel wording would refuse them.
+    "fuel_mileage": (
+        "ค่าน้ำมัน",
+        "ค่าน้ำมันรถ",
+    ),
 }
 
 

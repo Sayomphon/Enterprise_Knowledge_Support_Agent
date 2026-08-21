@@ -1,0 +1,142 @@
+[
+  {
+    "id": "nd_phone_01",
+    "category": "unsupported",
+    "query": "ขั้นตอนยื่นเบิกค่าโทรศัพท์มือถือผ่าน Expense Portal",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_phone_02",
+    "category": "unsupported",
+    "query": "ค่ามือถือเบิกได้ปะ",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_internet_01",
+    "category": "unsupported",
+    "query": "ขอเบิกค่าอินเทอร์เน็ตทำงานจากที่บ้านผ่าน Expense Portal ได้ไหม",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_internet_02",
+    "category": "unsupported",
+    "query": "ค่าเน็ตบ้านเบิกได้ปะ",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_equipment_01",
+    "category": "unsupported",
+    "query": "ค่าอุปกรณ์สำนักงานเบิกได้ไหม",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_equipment_02",
+    "category": "unsupported",
+    "query": "ซื้อค่าโต๊ะเก้าอี้ทำงานเองแล้วเคลมได้มั้ย",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_training_01",
+    "category": "unsupported",
+    "query": "ขอเบิกค่าอบรมภายนอกต้องยื่นเอกสารอะไรบ้าง",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_training_02",
+    "category": "unsupported",
+    "query": "ค่าคอร์สเรียนออนไลน์เบิกได้ปะ",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_perdiem_01",
+    "category": "unsupported",
+    "query": "เบี้ยเลี้ยงเดินทางต่างจังหวัดได้วันละเท่าไหร่",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_perdiem_02",
+    "category": "unsupported",
+    "query": "ไปต่างจังหวัดได้เบี้ยเลี้ยงมั้ยอะ",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_businessleave_01",
+    "category": "unsupported",
+    "query": "ลากิจใช้สิทธิ์ได้กี่วันต่อปี",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_businessleave_02",
+    "category": "unsupported",
+    "query": "พรุ่งนี้ขอลากิจได้ปะ",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_fuel_01",
+    "category": "unsupported",
+    "query": "ขับรถตัวเองไปพบลูกค้าเบิกค่าน้ำมันได้ไหม",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_fuel_02",
+    "category": "unsupported",
+    "query": "ค่าน้ำมันรถเคลมได้มั้ย",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_benign_01",
+    "category": "normal",
+    "query": "เบิกค่าแท็กซี่หลังทำ OT ต้องแนบเอกสารอะไรบ้าง",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-001"]
+  },
+  {
+    "id": "nd_benign_02",
+    "category": "normal",
+    "query": "ค่าที่จอดรถตอนออกไปพบลูกค้าเบิกได้ไหม",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-001", "CHAT-003"]
+  },
+  {
+    "id": "nd_benign_03",
+    "category": "normal",
+    "query": "ค่าเดินทางไปพบลูกค้าต่างจังหวัดต้องขออนุมัติล่วงหน้าหรือไม่",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-001"]
+  },
+  {
+    "id": "nd_benign_04",
+    "category": "noisy",
+    "query": "ขอ wfh อาทิตย์นึงได้กี่วันอะ",
+    "expected_route": "answered",
+    "expected_sources": ["HR-003"]
+  },
+  {
+    "id": "nd_benign_05",
+    "category": "normal",
+    "query": "ใบเสร็จหายต้องทำอย่างไรถึงจะเบิกได้",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-002", "CHAT-003"]
+  },
+  {
+    "id": "nd_benign_06",
+    "category": "normal",
+    "query": "ลาป่วยติดต่อกันกี่วันต้องแนบใบรับรองแพทย์",
+    "expected_route": "answered",
+    "expected_sources": ["HR-002"]
+  }
+]

@@ -712,3 +712,128 @@ env -u OPENAI_API_KEY python eval/run_eval.py --set heldout --strict
 The verbatim stdout of the non-strict runs is `eval/RESULTS.md`, which stays the
 only file the README may quote current numbers from. This block is the same run
 in the shape the console parses.
+
+---
+
+# Optimization pass P0-1 to P0-5 — metric semantics, alias expansion, near-domain catalog, live answers
+
+Recorded: 2026-08-21, on the working tree above commit `1d7b729`. Python 3.11.15,
+`OPENAI_API_KEY` empty for every offline set; the answer set is the one exception
+and names its own credentials and cost.
+
+Four things changed since the `b2b6fc1` block, and this snapshot exists because
+three of them move numbers the console and the README quote.
+
+1. **Metric semantics (P0-1).** "OOD Fallback Accuracy" counted every
+   fallback-labelled case regardless of category — calibration reported 9/9 for
+   four out-of-domain cases. Each category now has its own denominator, and
+   "Overall Fallback Accuracy" reports the union separately. "Answer-route
+   Precision" became "Answer-route Selection Precision", because it scores route
+   selection and retrieval and never reads an answer. Recall@1, MRR, and False
+   Fallback Rate are new. **Routing did not change:** every per-case verdict is
+   byte-identical to the `b2b6fc1` run, verified by diffing the per-case rows.
+2. **Deterministic alias expansion (P0-3).** A new graph node searches the
+   resolved topics' aliases before the medium band may buy an LLM rewrite.
+   Answerable medium-band expanded scores rise; labelled-fallback cases are
+   unaffected because the scope gate stops them before that node. Calibration
+   rewrite calls fell 4 to 1, held-out 2 to 1.
+3. **Near-domain catalog (P0-4).** Seven unsupported groups added as data, plus a
+   20-case set pairing 14 hard negatives with 6 benign twins.
+4. **Live answer quality (P0-2).** First measurement in this repository that can
+   fail because an answer was wrong. Full artifact: `eval/ANSWER_RESULTS.md`.
+
+`FINAL_ANSWER_THRESHOLD` was re-swept on calibration after the alias node landed
+and **held at 0.21**; the derivation changed and `src/config.py` records both.
+The held-out split was run once, after that freeze, and still carries its single
+coverage miss.
+
+## Measured results
+
+```text
+Offline unit tests: 363/363 passed
+
+Calibration (21 cases), strict exit 0:
+  Retrieval Hit@3                          12/12
+  Retrieval Recall@1                       11/12
+  Retrieval MRR 0.958, best expected source
+  Answer-route Selection Precision         12/12
+  Answer-route Coverage                    12/12
+  False Fallback Rate                       0/12
+  OOD Fallback Accuracy                      4/4
+  Unsupported In-domain Fallback Accuracy    5/5
+  Overall Fallback Accuracy                  9/9
+  Authoritative Evidence Coverage Rate     12/12
+  Rewrite Recovery Rate                      4/4
+
+Near-domain (20 cases), strict exit 0:
+  Retrieval Hit@3                            6/6
+  Retrieval Recall@1                         5/6
+  Answer-route Selection Precision           6/6
+  Answer-route Coverage                      6/6
+  Unsupported In-domain Fallback Accuracy  14/14
+  Rewrite Recovery Rate                      2/2
+
+Guardrail (42 cases), strict exit 0:
+  Injection Block Rate                     21/21
+  Benign Pass Rate                         21/21
+
+Contracts (39 cases), strict exit 0:
+  Citation Provenance Validity Rate        19/19
+  Claim Source Coverage Rate               16/20
+  Invalid Candidate Leakage Rate            0/15
+  Rewrite Intent Preservation Rate         20/20
+
+Held-out (14 cases), strict exit 1:
+  Retrieval Hit@3                            7/7
+  Retrieval Recall@1                         7/7
+  Retrieval MRR 1.000, best expected source
+  Answer-route Selection Precision           6/6
+  Answer-route Coverage                      6/7   <- the one gate failure
+  False Fallback Rate                        1/7
+  OOD Fallback Accuracy                      3/3
+  Unsupported In-domain Fallback Accuracy    4/4
+  Overall Fallback Accuracy                  7/7
+  Authoritative Evidence Coverage Rate       6/6
+  Rewrite Recovery Rate                      1/2
+
+Live answers (17 cases), gpt-5-mini x 3 runs, 42 calls:
+  Fact Recall                              52/57
+  Fact-Citation Alignment                  52/52
+  Alien Number Rate                         0/51
+  Forbidden Fact Rate                       0/51
+  Correct Refusal Rate                       3/3
+  Route Stability                          16/17
+  Latency p50 6.6s, p95 27.7s
+```
+
+Commands used:
+
+```bash
+OPENAI_API_KEY= python -m unittest discover -s tests
+OPENAI_API_KEY= python eval/run_eval.py --set calibration --strict
+OPENAI_API_KEY= python eval/run_eval.py --set near_domain --strict
+OPENAI_API_KEY= python eval/run_eval.py --set guardrail --strict
+OPENAI_API_KEY= python eval/run_eval.py --set contracts --strict
+OPENAI_API_KEY= python eval/run_eval.py --set heldout --strict
+python eval/run_eval.py --set answers --live --runs 3 \
+    --transcript eval/answer_transcript.json
+```
+
+`OPENAI_API_KEY=` rather than `env -u OPENAI_API_KEY`: `src/config` calls
+`load_dotenv()`, so unsetting the variable lets a local `.env` put the key back
+and the run is not keyless at all. An empty value is what `has_llm_credential`
+reads as absent. Earlier blocks in this file record the `env -u` form; on a
+machine with a populated `.env` that form does not prove what it claims to.
+
+The verbatim stdout of the non-strict offline runs is `eval/RESULTS.md`; the live
+run's is `eval/ANSWER_RESULTS.md`. This block is the same runs in the shape the
+console's Evaluation panel parses.
+
+## The held-out strict failure is still expected
+
+`ho_noisy_03` reaches 0.1986 against a 0.21 threshold. Alias expansion lifted it
+from 0.1412 raw to 0.1913 and the cached rewrite adds 0.0073 more; both fall
+short. Nothing here was moved to close it, and nothing should be: the same
+threshold change would readmit the unsupported in-domain cases the scope gate
+exists to refuse. Recovering it through representation rather than thresholds is
+tracked as a separate piece of work.

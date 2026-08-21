@@ -21,6 +21,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -47,6 +48,11 @@ MEDIUM_SCORE = (config.REWRITE_FLOOR + config.DIRECT_ANSWER_THRESHOLD) / 2
 LOW_SCORE = config.REWRITE_FLOOR / 2
 EXPANDED_PASS_SCORE = min(config.FINAL_ANSWER_THRESHOLD + 0.10, 1.0)
 EXPANDED_FAIL_SCORE = max(config.FINAL_ANSWER_THRESHOLD - 0.05, 0.0)
+# What the deterministic alias expansion returns when the topic catalog
+# was not enough to settle the medium band. A medium-band route now costs
+# three searches -- original, alias, expanded -- and a stub that queues
+# only two would report the alias result as the expanded one.
+ALIAS_FAIL_SCORE = EXPANDED_FAIL_SCORE
 # Scores sitting exactly ON a threshold. Every comparison in the router is
 # ">=", and without these no test distinguishes it from ">": flipping all
 # three left the whole suite green, while the real held-out margin at
@@ -96,6 +102,7 @@ LOG_SCHEMA_KEYS = [
     "expanded_retrieval_score",
     "top_sources",
     "rewritten_queries",
+    "alias_query_count",
 ]
 
 
@@ -190,6 +197,26 @@ class StubRetriever:
         if not self._responses:
             raise AssertionError("StubRetriever ran out of canned responses")
         return self._responses.pop(0)
+
+
+class AttributingRetriever(StubRetriever):
+    """Stub that credits its results to the LAST query it was given.
+
+    ``StubRetriever`` returns documents with no ``matched_query``, which
+    is enough for routing but cannot exercise provenance. This mimics the
+    real retriever's attribution for the case that matters: a document
+    whose best score came from a generated variant rather than from the
+    employee's own wording.
+    """
+
+    def search(
+        self, queries: list[str], top_k: int
+    ) -> list[RetrievedDocument]:
+        """Return the next canned response, attributed to ``queries[-1]``."""
+        return [
+            replace(document, matched_query=queries[-1])
+            for document in super().search(queries, top_k)
+        ]
 
 
 class FailingRetriever:
@@ -343,7 +370,11 @@ class TestGraphRoutes(unittest.TestCase):
         self._set_rewriter(rewriter_seam, [REWRITTEN_VARIANT])
         self._set_reporter(reporter_seam, VALID_CANDIDATE)
         graph = self._graph(
-            [_documents(MEDIUM_SCORE), _documents(EXPANDED_PASS_SCORE)]
+            [
+                _documents(MEDIUM_SCORE),
+                _documents(ALIAS_FAIL_SCORE),
+                _documents(EXPANDED_PASS_SCORE),
+            ]
         )
 
         state: PipelineState = graph.invoke({"query": SLANG_QUERY})
@@ -354,9 +385,16 @@ class TestGraphRoutes(unittest.TestCase):
         self.assertAlmostEqual(
             state["expanded_retrieval_score"], EXPANDED_PASS_SCORE
         )
-        # Expanded retrieval always includes the original query first.
+        # Expanded retrieval keeps the original query first and carries
+        # the alias variants alongside the rewrite, so a rewrite that is
+        # worse than the catalog cannot undo what the catalog found.
         self.assertEqual(
-            self.retriever.calls[1][0], [SLANG_QUERY, REWRITTEN_VARIANT]
+            self.retriever.calls[2][0],
+            [
+                SLANG_QUERY,
+                *state["alias_expansion_queries"],
+                REWRITTEN_VARIANT,
+            ],
         )
         # LLM budget for the medium band: one rewrite plus one report.
         rewriter_invoke = (
@@ -364,6 +402,142 @@ class TestGraphRoutes(unittest.TestCase):
         )
         self.assertEqual(rewriter_invoke.invoke.call_count, 1)
         self.assertEqual(self._reporter_invocations(reporter_seam), 1)
+
+    def test_alias_expansion_answers_the_medium_band_without_a_rewrite(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # The medium band used to spend an LLM call on every slang query,
+        # which also made its route depend on what the provider returned
+        # that minute. When the topic catalog settles the score, no model
+        # is asked and the route is reproducible.
+        self._set_reporter(reporter_seam, VALID_CANDIDATE)
+        graph = self._graph(
+            [_documents(MEDIUM_SCORE), _documents(EXPANDED_PASS_SCORE)]
+        )
+
+        state: PipelineState = graph.invoke({"query": SLANG_QUERY})
+
+        self.assertEqual(state["route"], "answered")
+        self.assertTrue(state["alias_expansion_queries"])
+        self.assertNotIn("rewritten_queries", state)
+        # The zero-rewrite guarantee: the seam was never constructed, so
+        # the medium band cost one LLM call rather than two.
+        self.assertEqual(rewriter_seam.call_count, 0)
+        self.assertEqual(self._reporter_invocations(reporter_seam), 1)
+        # The alias search always carries the employee's own query first.
+        self.assertEqual(
+            self.retriever.calls[1][0],
+            [SLANG_QUERY, *state["alias_expansion_queries"]],
+        )
+
+    def test_a_document_ranked_by_an_alias_says_so(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # Alias variants skip the rewrite validator because they are this
+        # repository's own configuration rather than model output, so the
+        # provenance label is what tells a reviewer that a score came
+        # from catalog wording instead of from what the employee typed.
+        self._set_reporter(reporter_seam, VALID_CANDIDATE)
+        self.retriever = AttributingRetriever(
+            [_documents(MEDIUM_SCORE), _documents(EXPANDED_PASS_SCORE)]
+        )
+        graph = build_graph(
+            retriever=self.retriever,
+            log_path=self.log_path,
+            documents=_corpus(),
+        )
+
+        state: PipelineState = graph.invoke({"query": SLANG_QUERY})
+
+        self.assertEqual(state["route"], "answered")
+        winner = state["retrieved_candidates"][0]
+        self.assertEqual(winner.matched_query, state["alias_expansion_queries"][-1])
+        self.assertEqual(winner.matched_query_type, "alias")
+
+    def test_alias_expansion_failure_falls_back_before_any_llm_call(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # A crashed index is not a thin corpus and must not buy a rewrite:
+        # the node's failure edge routes to fallback with its own reason,
+        # never to END and never onward to a provider.
+        self.retriever = FailingRetriever(2, StubRetriever([
+            _documents(MEDIUM_SCORE),
+            _documents(EXPANDED_PASS_SCORE),
+        ]))
+        graph = build_graph(
+            retriever=self.retriever,
+            log_path=self.log_path,
+            documents=_corpus(),
+        )
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            state: PipelineState = graph.invoke({"query": SLANG_QUERY})
+
+        self.assertEqual(state["route"], "fallback")
+        self.assertEqual(
+            state["fallback_reason"], ReasonCode.RETRIEVAL_FAILURE.value
+        )
+        self.assertEqual(rewriter_seam.call_count, 0)
+        self.assertEqual(reporter_seam.call_count, 0)
+        self.assertIn("RuntimeError", stderr.getvalue())
+        self.assertNotIn("/srv/secret/index.pkl", stderr.getvalue())
+        record = self._log_records()[0]
+        self.assertEqual(record["reason"], ReasonCode.RETRIEVAL_FAILURE.value)
+        self.assertNotIn(
+            "index.pkl", json.dumps(record, ensure_ascii=False)
+        )
+
+    def test_the_log_counts_alias_variants_without_quoting_them(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # The count separates "expansion found nothing" from "no
+        # expansion ran"; the text stays out because it is recoverable
+        # from the topic catalog and would double every medium-band
+        # record to say nothing new.
+        self._set_rewriter(rewriter_seam, [REWRITTEN_VARIANT])
+        graph = self._graph(
+            [
+                _documents(MEDIUM_SCORE),
+                _documents(ALIAS_FAIL_SCORE),
+                _documents(EXPANDED_FAIL_SCORE),
+            ]
+        )
+
+        state: PipelineState = graph.invoke({"query": SLANG_QUERY})
+
+        record = self._log_records()[0]
+        self.assertEqual(
+            record["alias_query_count"], len(state["alias_expansion_queries"])
+        )
+        self.assertGreater(record["alias_query_count"], 0)
+        for variant in state["alias_expansion_queries"]:
+            with self.subTest(variant=variant):
+                self.assertNotIn(
+                    variant, json.dumps(record, ensure_ascii=False)
+                )
+
+    def test_zero_llm_routes_run_no_alias_expansion(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # The new node sits behind the scope gate on the medium branch
+        # only, so the routes that already cost nothing must not gain a
+        # second search.
+        for query, responses in (
+            (OUT_OF_DOMAIN_QUERY, [_documents(LOW_SCORE)]),
+            (UNSUPPORTED_HIGH_QUERY, [_documents(HIGH_SCORE)]),
+            (UNSUPPORTED_MEDIUM_QUERY, [_documents(MEDIUM_SCORE)]),
+        ):
+            with self.subTest(query=query):
+                graph = self._graph(responses)
+
+                state: PipelineState = graph.invoke({"query": query})
+
+                self.assertEqual(state["route"], "fallback")
+                self.assertNotIn("alias_expansion_queries", state)
+                self.assertEqual(len(self.retriever.calls), 1)
+                self.assertEqual(rewriter_seam.call_count, 0)
+                self.assertEqual(reporter_seam.call_count, 0)
 
     def test_unsupported_topic_falls_back_with_zero_llm_calls(
         self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
@@ -588,7 +762,9 @@ class TestGraphRoutes(unittest.TestCase):
         structured = rewriter_seam.return_value.with_structured_output
         structured.return_value.invoke.side_effect = TimeoutError()
         self._set_reporter(reporter_seam, VALID_CANDIDATE)
-        graph = self._graph([_documents(MEDIUM_SCORE)])
+        graph = self._graph(
+            [_documents(MEDIUM_SCORE), _documents(ALIAS_FAIL_SCORE)]
+        )
 
         with contextlib.redirect_stderr(io.StringIO()):
             state: PipelineState = graph.invoke({"query": SLANG_QUERY})
@@ -607,17 +783,20 @@ class TestGraphRoutes(unittest.TestCase):
         self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
     ) -> None:
         # With no accepted rewrite the expanded search would repeat the
-        # original one exactly, and the medium band puts its score below
-        # FINAL_ANSWER_THRESHOLD by definition, so the verdict is already
-        # decided. Only one retrieval may run.
+        # alias expansion exactly, and this branch was taken because that
+        # score sat below FINAL_ANSWER_THRESHOLD, so the verdict is
+        # already decided. The original and alias searches may run; a
+        # third may not.
         structured = rewriter_seam.return_value.with_structured_output
         structured.return_value.invoke.side_effect = TimeoutError()
-        graph = self._graph([_documents(MEDIUM_SCORE)])
+        graph = self._graph(
+            [_documents(MEDIUM_SCORE), _documents(ALIAS_FAIL_SCORE)]
+        )
 
         with contextlib.redirect_stderr(io.StringIO()):
             graph.invoke({"query": SLANG_QUERY})
 
-        self.assertEqual(len(self.retriever.calls), 1)
+        self.assertEqual(len(self.retriever.calls), 2)
 
     def test_drifted_rewrite_is_rejected_before_expanded_retrieval(
         self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
@@ -625,7 +804,11 @@ class TestGraphRoutes(unittest.TestCase):
         self._set_rewriter(rewriter_seam, [DRIFTED_VARIANT])
         self._set_reporter(reporter_seam, VALID_CANDIDATE)
         graph = self._graph(
-            [_documents(MEDIUM_SCORE), _documents(EXPANDED_PASS_SCORE)]
+            [
+                _documents(MEDIUM_SCORE),
+                _documents(ALIAS_FAIL_SCORE),
+                _documents(EXPANDED_PASS_SCORE),
+            ]
         )
 
         state: PipelineState = graph.invoke({"query": SLANG_QUERY})
@@ -633,8 +816,9 @@ class TestGraphRoutes(unittest.TestCase):
         self.assertTrue(state["rewrite_rejected"])
         self.assertEqual(state["rewritten_queries"], [])
         # The drifted variant never reaches the index. With nothing left
-        # to expand with, no second search runs at all.
-        self.assertEqual(len(self.retriever.calls), 1)
+        # to expand with beyond the aliases already searched, the queued
+        # third response is never taken.
+        self.assertEqual(len(self.retriever.calls), 2)
         self.assertEqual(
             state["fallback_reason"], ReasonCode.REWRITE_REJECTED.value
         )
@@ -664,7 +848,11 @@ class TestGraphRoutes(unittest.TestCase):
         )
         self._set_reporter(reporter_seam, VALID_CANDIDATE)
         graph = self._graph(
-            [_documents(MEDIUM_SCORE), _documents(EXPANDED_PASS_SCORE)]
+            [
+                _documents(MEDIUM_SCORE),
+                _documents(ALIAS_FAIL_SCORE),
+                _documents(EXPANDED_PASS_SCORE),
+            ]
         )
 
         state: PipelineState = graph.invoke({"query": SLANG_QUERY})
@@ -673,7 +861,12 @@ class TestGraphRoutes(unittest.TestCase):
         self.assertEqual(state["rewritten_queries"], [REWRITTEN_VARIANT])
         self.assertFalse(state["rewrite_rejected"])
         self.assertEqual(
-            self.retriever.calls[1][0], [SLANG_QUERY, REWRITTEN_VARIANT]
+            self.retriever.calls[2][0],
+            [
+                SLANG_QUERY,
+                *state["alias_expansion_queries"],
+                REWRITTEN_VARIANT,
+            ],
         )
 
     def test_low_expanded_score_falls_back_without_reporter_call(
@@ -681,7 +874,11 @@ class TestGraphRoutes(unittest.TestCase):
     ) -> None:
         self._set_rewriter(rewriter_seam, [REWRITTEN_VARIANT])
         graph = self._graph(
-            [_documents(MEDIUM_SCORE), _documents(EXPANDED_FAIL_SCORE)]
+            [
+                _documents(MEDIUM_SCORE),
+                _documents(ALIAS_FAIL_SCORE),
+                _documents(EXPANDED_FAIL_SCORE),
+            ]
         )
 
         state: PipelineState = graph.invoke({"query": SLANG_QUERY})
@@ -911,7 +1108,11 @@ class TestKeylessRoutes(unittest.TestCase):
         self,
     ) -> None:
         graph = self._graph(
-            [_documents(MEDIUM_SCORE), _documents(EXPANDED_PASS_SCORE)]
+            [
+                _documents(MEDIUM_SCORE),
+                _documents(ALIAS_FAIL_SCORE),
+                _documents(EXPANDED_PASS_SCORE),
+            ]
         )
 
         stderr = io.StringIO()
@@ -923,8 +1124,10 @@ class TestKeylessRoutes(unittest.TestCase):
             ReasonCode.LLM_NOT_CONFIGURED.value,
         )
         self.assertEqual(state["rewritten_queries"], [])
-        # No second search: there was nothing to expand with.
-        self.assertEqual(len(self.retriever.calls), 1)
+        # No search after the alias expansion: with no rewrite there was
+        # nothing left to expand with, so the queued third response is
+        # never taken.
+        self.assertEqual(len(self.retriever.calls), 2)
         self.assertEqual(state["fallback_reason"], "llm_not_configured")
 
     def test_medium_band_without_a_key_reports_the_service_state(
@@ -939,7 +1142,9 @@ class TestKeylessRoutes(unittest.TestCase):
         # evidence that was never gathered is the misattribution
         # remediation Finding 8 removes, and app.py's own operator warning
         # promises llm_not_configured for any query that needs the LLM.
-        graph = self._graph([_documents(MEDIUM_SCORE)])
+        graph = self._graph(
+            [_documents(MEDIUM_SCORE), _documents(ALIAS_FAIL_SCORE)]
+        )
 
         with contextlib.redirect_stderr(io.StringIO()):
             state: PipelineState = graph.invoke({"query": SLANG_QUERY})
@@ -953,7 +1158,11 @@ class TestKeylessRoutes(unittest.TestCase):
         # missed, that is an evidence outcome and keeps its own code.
         graph = build_graph(
             retriever=StubRetriever(
-                [_documents(MEDIUM_SCORE), _documents(EXPANDED_FAIL_SCORE)]
+                [
+                    _documents(MEDIUM_SCORE),
+                    _documents(ALIAS_FAIL_SCORE),
+                    _documents(EXPANDED_FAIL_SCORE),
+                ]
             ),
             log_path=self.log_path,
             documents=_corpus(),
