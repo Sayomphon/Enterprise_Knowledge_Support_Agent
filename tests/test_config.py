@@ -182,6 +182,13 @@ class TestImportTimeValidation(unittest.TestCase):
             "FINAL_ANSWER_THRESHOLD must not sit below",
         )
 
+    def test_non_positive_request_deadline_is_rejected(self) -> None:
+        # A zero deadline would skip both boundaries of every request,
+        # turning a misconfiguration into a service that answers nothing.
+        self._reload_expecting_error(
+            {"REQUEST_DEADLINE_SECONDS": "0"}, "REQUEST_DEADLINE_SECONDS"
+        )
+
     def test_non_positive_top_k_is_rejected(self) -> None:
         self._reload_expecting_error({"TOP_K": "0"}, "TOP_K")
 

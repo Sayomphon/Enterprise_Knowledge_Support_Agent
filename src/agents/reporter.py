@@ -29,14 +29,19 @@ from collections.abc import Sequence
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.agents import get_llm
-from src.schemas import GroundedAnswer, RetrievedDocument
+from src.schemas import MAX_ANSWER_CLAIMS, GroundedAnswer, RetrievedDocument
 
-# Thai prompt template (allowed here by AGENTS.md section 6.1).
-REPORTER_SYSTEM_PROMPT = """\
+# Thai prompt template (allowed here by AGENTS.md section 6.1). The claim
+# limit is stated in the prompt as well as enforced by the schema: the
+# schema makes an over-long answer fail to parse, and telling the model
+# the bound is what keeps it from producing one and losing the request.
+_REPORTER_SYSTEM_PROMPT_TEMPLATE = """\
 คุณคือผู้ช่วยตอบคำถามพนักงานจากฐานความรู้ภายในองค์กรเท่านั้น
 
 รูปแบบคำตอบ:
 - ตอบเป็นโครงสร้าง claims โดยแต่ละ claim คือข้อเท็จจริงหนึ่งข้อ
+- ส่ง claim เฉพาะข้อที่จำเป็นต่อคำถามนี้ รวมแล้วไม่เกิน {max_claims} ข้อ
+  ห้ามสรุปเนื้อหาทั้งเอกสารหากคำถามไม่ได้ถามถึง
 - ทุก claim ต้องระบุ source_ids อย่างน้อยหนึ่งรหัสจากหลักฐานที่ให้มา
 - ห้ามพิมพ์รหัสอ้างอิงในรูปแบบ [SOURCE-ID] ลงในข้อความ claim เอง
   ระบบจะเติมรหัสให้อัตโนมัติจาก source_ids ที่ผ่านการตรวจสอบแล้ว
@@ -55,6 +60,10 @@ REPORTER_SYSTEM_PROMPT = """\
 - หากหลักฐานไม่เพียงพอที่จะตอบคำถาม ให้ตั้ง insufficient_evidence เป็น true
   และห้ามส่ง claim ใด ๆ กลับมา
 """
+
+REPORTER_SYSTEM_PROMPT = _REPORTER_SYSTEM_PROMPT_TEMPLATE.format(
+    max_claims=MAX_ANSWER_CLAIMS
+)
 
 # Thai user-message scaffold; the JSON evidence block is appended verbatim.
 USER_MESSAGE_TEMPLATE = (
@@ -108,7 +117,10 @@ def format_evidence(retrieved: Sequence[RetrievedDocument]) -> str:
 
 
 def generate_answer(
-    query: str, retrieved: Sequence[RetrievedDocument]
+    query: str,
+    retrieved: Sequence[RetrievedDocument],
+    *,
+    budget_seconds: float | None = None,
 ) -> GroundedAnswer:
     """Generate a structured candidate answer from the evidence only.
 
@@ -117,6 +129,9 @@ def generate_answer(
         retrieved: Answer evidence; must be non-empty because the graph
             only reaches the reporter once the evidence selector found
             authoritative policy for the request.
+        budget_seconds: What is left of the request deadline, which
+            trims this boundary's timeout. The graph does not call this
+            function at all once the budget is gone.
 
     Returns:
         The parsed candidate answer. It is unvalidated model output: the
@@ -135,9 +150,9 @@ def generate_answer(
         raise ReportGenerationError(
             "generate_answer requires at least one retrieved document"
         )
-    structured_llm = get_llm().with_structured_output(
-        GroundedAnswer, method="json_schema"
-    )
+    structured_llm = get_llm(
+        budget_seconds=budget_seconds
+    ).with_structured_output(GroundedAnswer, method="json_schema")
     candidate = structured_llm.invoke(
         [
             SystemMessage(content=REPORTER_SYSTEM_PROMPT),

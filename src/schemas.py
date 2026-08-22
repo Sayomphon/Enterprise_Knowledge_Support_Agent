@@ -262,6 +262,16 @@ class AnswerClaim(BaseModel):
         return tuple(source_id.strip() for source_id in self.source_ids)
 
 
+# Upper bound on the claims one answer may carry. It is a contract with
+# the provider rather than a calibrated threshold: the bound travels into
+# the JSON schema sent with the request, so the model is told the limit
+# instead of being trimmed afterwards. Six is what the demo answers
+# needed -- a nine-claim answer took 29.6 seconds to generate and read
+# like a policy dump rather than a reply -- and an answer that genuinely
+# needs more is a sign the question should be split.
+MAX_ANSWER_CLAIMS = 6
+
+
 class GroundedAnswer(BaseModel):
     """Structured reporter output, before any validation has run.
 
@@ -271,15 +281,21 @@ class GroundedAnswer(BaseModel):
 
     Attributes:
         claims: The factual statements the model wants to make, in
-            reading order. Empty when the model reports insufficient
-            evidence.
+            reading order, at most ``MAX_ANSWER_CLAIMS`` of them. Empty
+            when the model reports insufficient evidence. A provider that
+            returns more than the cap fails to parse, which the reporter
+            boundary degrades to a fallback -- the alternative, silently
+            keeping the first six, would render a truncated answer as a
+            complete one.
         insufficient_evidence: Set by the model when the supplied
             evidence cannot answer the question. It must then make no
             claims at all; the request degrades to the fallback response
             instead of to a hedged half-answer.
     """
 
-    claims: list[AnswerClaim] = Field(default_factory=list)
+    claims: list[AnswerClaim] = Field(
+        default_factory=list, max_length=MAX_ANSWER_CLAIMS
+    )
     insufficient_evidence: bool = False
 
 
@@ -318,6 +334,16 @@ class PipelineState(TypedDict):
     """
 
     query: str
+
+    # Monotonic timestamp stamped by the first node, from which every
+    # boundary derives what is left of REQUEST_DEADLINE_SECONDS. A
+    # monotonic reading rather than a wall clock: the budget is an
+    # elapsed duration, and the system clock may step during a request.
+    request_started_at: NotRequired[float]
+    # How many provider calls this request actually spent. Telemetry
+    # only -- no route reads it -- so an operator can tell a two-call
+    # medium-band request from one the alias catalog settled.
+    llm_calls: NotRequired[int]
 
     # Routing outcome and guardrail verdict.
     route: NotRequired[Route]

@@ -109,20 +109,41 @@ LLM_MAX_RETRIES: int = _env_int("LLM_MAX_RETRIES", "2")
 # shared 30s x 3 attempts they reach 180 seconds of frozen UI before the
 # fallback text appears. The rewrite is the optional half of that -- it
 # improves recall, it does not produce the answer -- so it is the half
-# that is cut. Worst case becomes 10s x 2 + 30s x 3 = 110s. That is still
-# a long wait; a per-request deadline shared across both boundaries is
-# the real fix and is not implemented here.
+# that is cut. On their own these two budgets still allow 10s x 2 + 30s x
+# 3 = 110s, because nothing related them to each other; the deadline
+# below is what relates them.
 LLM_REWRITE_TIMEOUT_SECONDS: float = _env_float(
     "LLM_REWRITE_TIMEOUT_SECONDS", "10"
 )
 LLM_REWRITE_MAX_RETRIES: int = _env_int("LLM_REWRITE_MAX_RETRIES", "1")
+# The per-request deadline the comment above called the real fix. The two
+# boundaries keep their own budgets -- those cap a single stalled call --
+# and this caps the request that contains them: each boundary is offered
+# only what is left of the deadline, and one reached with nothing left is
+# skipped rather than started, so the worst case stops being the sum of
+# every retry budget. 45s sits above the measured live p95 of 27.7s
+# (eval/ANSWER_RESULTS.md, 2026-08-21) with room for one slow reporter
+# call, so it bounds the pathological request without cutting ordinary
+# ones short. It is an operational ceiling, not a calibrated threshold:
+# no evaluation set decides it, and raising it costs patience rather than
+# precision.
+REQUEST_DEADLINE_SECONDS: float = _env_float("REQUEST_DEADLINE_SECONDS", "45")
 
 # Calibrated 2026-08-20 against eval/retrieval_calibration.json with the
 # character (2,5) TF-IDF configuration; the (2,4)/(2,5)/(3,5) ablation all
-# reached Hit@3 12/12, and (2,5) gave the widest low-band gap. Raw top-1
-# scores: generic OOD <= 0.0858 vs weakest answerable 0.1187, so the floor
-# sits between them. The salary hard negative scored 0.1773 raw vs 0.1972
-# for the next answerable case, so the direct threshold stays above it.
+# reached Hit@3 12/12 on the 21-case set of that date, and (2,5) gave the
+# widest low-band gap. Raw top-1 scores: generic OOD <= 0.0858 vs weakest
+# answerable 0.1187, so the floor sits between them. The salary hard
+# negative scored 0.1773 raw vs 0.1972 for the next answerable case, so
+# the direct threshold stays above it.
+#
+# Re-swept 2026-08-22 on the 25-case set, after four receipt-slang cases
+# were added, over {(2,4), (2,5), (3,5)} x title_weight {1, 2, 3}. Both
+# numbers are unchanged and (2,5) is still the configuration they belong
+# to: the (2,4) column lifts the strongest generic out-of-domain query to
+# 0.1029, which would put it above this floor and leave the separation to
+# the scope gate rather than to the score. The full matrix, and why title
+# weighting was rejected too, is in eval/BASELINE.md (Phase 10).
 REWRITE_FLOOR: float = _env_float("REWRITE_FLOOR", "0.10")
 DIRECT_ANSWER_THRESHOLD: float = _env_float("DIRECT_ANSWER_THRESHOLD", "0.19")
 # Recalibrated 2026-08-20 on the 21-case set after the supported-scope gate
@@ -145,6 +166,12 @@ DIRECT_ANSWER_THRESHOLD: float = _env_float("DIRECT_ANSWER_THRESHOLD", "0.19")
 # trade-off is explicit and unchanged: precision on this band rests on
 # the scope gate rather than on the score alone, so weakening the scope
 # catalog would weaken this threshold too.
+#
+# Re-verified 2026-08-22 on the 25-case set: coverage 16/16 with
+# precision 16/16, and the weakest answerable expanded score is still
+# cal_noisy_02 at 0.2176 -- the four receipt-slang cases added that round
+# clear this gate at 0.2144 or above. The number did not move and no
+# held-out data was read to keep it there.
 FINAL_ANSWER_THRESHOLD: float = _env_float("FINAL_ANSWER_THRESHOLD", "0.21")
 
 # Scope-gate alias similarity, calibrated 2026-08-20 against the 21-case
@@ -157,6 +184,12 @@ FINAL_ANSWER_THRESHOLD: float = _env_float("FINAL_ANSWER_THRESHOLD", "0.21")
 # negatives are rejected by their unsupported alias instead. 0.40 sits
 # near the midpoint of that 0.1667-0.5714 gap. Held-out data was not
 # consulted for this number.
+#
+# Re-verified 2026-08-22 after two aliases from FIN-002's own opening
+# line joined the receipt topic: the 25-case calibration set and the
+# 20-case near-domain set both stay at 100% on every fallback-accuracy
+# metric, so the widened catalog did not pull an unsupported question
+# into a supported topic at this threshold.
 SCOPE_MATCH_THRESHOLD: float = _env_float("SCOPE_MATCH_THRESHOLD", "0.40")
 
 # Rewrite lexical continuity, calibrated 2026-08-20 against the labelled
@@ -258,3 +291,5 @@ if LLM_REWRITE_TIMEOUT_SECONDS <= 0:
     raise ValueError("LLM_REWRITE_TIMEOUT_SECONDS must be greater than zero")
 if LLM_REWRITE_MAX_RETRIES < 0:
     raise ValueError("LLM_REWRITE_MAX_RETRIES must not be negative")
+if REQUEST_DEADLINE_SECONDS <= 0:
+    raise ValueError("REQUEST_DEADLINE_SECONDS must be greater than zero")

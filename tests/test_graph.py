@@ -25,10 +25,14 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
+from pydantic import ValidationError
+
 from src import config
 from src.agents.rewriter import RewriteResult
 from src.fallback import ReasonCode
 from src.graph import (
+    _latency_ms,
+    _remaining_budget,
     build_graph,
     route_after_expanded_retrieval,
     route_after_raw_retrieval,
@@ -108,6 +112,8 @@ LOG_SCHEMA_KEYS = [
     "top_sources",
     "rewritten_queries",
     "alias_query_count",
+    "latency_ms",
+    "llm_calls",
 ]
 
 
@@ -922,6 +928,26 @@ class TestGraphRoutes(unittest.TestCase):
         self.assertNotIn("secret provider payload", stderr.getvalue())
         self.assertEqual(self._log_records()[0]["reason"], "reporter_failure")
 
+    def test_an_over_long_answer_degrades_instead_of_crashing(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # The claim cap is enforced by the schema the provider is given,
+        # so a provider that ignores it produces a parse error rather
+        # than a truncated answer. The request must survive that as an
+        # ordinary reporter failure.
+        structured = reporter_seam.return_value.with_structured_output
+        structured.return_value.invoke.side_effect = ValidationError.from_exception_data(
+            "GroundedAnswer", []
+        )
+        graph = self._graph([_documents(HIGH_SCORE)])
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            state: PipelineState = graph.invoke({"query": NORMAL_QUERY})
+
+        self.assertEqual(state["route"], "fallback")
+        self.assertEqual(state["fallback_reason"], "reporter_failure")
+        self.assertNotIn("answer", state)
+
     def test_log_records_follow_the_schema_with_timezone_aware_timestamps(
         self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
     ) -> None:
@@ -1171,7 +1197,12 @@ class TestKeylessRoutes(unittest.TestCase):
             ),
             log_path=self.log_path,
             documents=_corpus(),
-            rewriter=lambda query: ([f"{query} ปรับคำ"], None),
+            rewriter=(
+                lambda query, *, budget_seconds=None: (
+                    [f"{query} ปรับคำ"],
+                    None,
+                )
+            ),
         )
 
         state: PipelineState = graph.invoke({"query": SLANG_QUERY})
@@ -1330,6 +1361,183 @@ class TestDeterministicStageFailures(unittest.TestCase):
         logged = self._log_records()[0]["query"]
         self.assertLess(len(logged), 2_000)
         self.assertFalse(logged.startswith(" "))
+
+
+class TestRequestDeadline(unittest.TestCase):
+    """One deadline covers both LLM boundaries of a request.
+
+    The per-boundary timeouts bound a single stalled call and say
+    nothing about the request that contains both, so these tests drive a
+    mocked clock rather than waiting: what matters is which boundary is
+    skipped, what reason the skip records, and how much budget the
+    boundary that does run is handed.
+    """
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.log_path = Path(tmp.name) / "fallback_queries.jsonl"
+        self.rewrite_budgets: list[float | None] = []
+        self.report_budgets: list[float | None] = []
+
+    def _clock(self, *readings: float):
+        """Patch the graph clock with a fixed sequence of readings.
+
+        The first reading is the stamp the guardrail node writes; every
+        later one answers an elapsed-time question, so the last value is
+        repeated for as many of those as the route asks.
+        """
+        stamp, *rest = readings
+        values = iter([stamp] + rest + [rest[-1]] * 12)
+        return mock.patch(
+            "src.graph.time.monotonic", side_effect=lambda: next(values)
+        )
+
+    def _rewriter(self, candidates: list[str]):
+        """Build a rewrite seam that records the budget it was offered."""
+
+        def rewrite(query, *, budget_seconds=None):
+            self.rewrite_budgets.append(budget_seconds)
+            return list(candidates), None
+
+        return rewrite
+
+    def _reporter(self):
+        """Build a reporter seam that records its offered budget."""
+
+        def report(query, retrieved, *, budget_seconds=None):
+            self.report_budgets.append(budget_seconds)
+            return VALID_CANDIDATE
+
+        return report
+
+    def _graph(self, responses: list[list[RetrievedDocument]]):
+        return build_graph(
+            retriever=StubRetriever(responses),
+            log_path=self.log_path,
+            documents=_corpus(),
+            rewriter=self._rewriter([REWRITTEN_VARIANT]),
+            reporter=self._reporter(),
+        )
+
+    def _log_records(self) -> list[dict[str, object]]:
+        if not self.log_path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in self.log_path.read_text(encoding="utf-8").splitlines()
+        ]
+
+    def test_exhausted_budget_skips_the_rewrite_call(self) -> None:
+        graph = self._graph(
+            [
+                _documents(MEDIUM_SCORE),
+                _documents(ALIAS_FAIL_SCORE),
+            ]
+        )
+
+        with self._clock(0.0, config.REQUEST_DEADLINE_SECONDS + 1.0):
+            state = graph.invoke({"query": SLANG_QUERY})
+
+        self.assertEqual(state["route"], "fallback")
+        self.assertEqual(
+            state["fallback_reason"],
+            ReasonCode.REQUEST_DEADLINE_EXCEEDED.value,
+        )
+        self.assertEqual(self.rewrite_budgets, [])
+
+    def test_exhausted_budget_skips_the_reporter_call(self) -> None:
+        graph = self._graph([_documents(HIGH_SCORE)])
+
+        with self._clock(0.0, config.REQUEST_DEADLINE_SECONDS + 1.0):
+            state = graph.invoke({"query": NORMAL_QUERY})
+
+        self.assertEqual(state["route"], "fallback")
+        self.assertEqual(
+            state["fallback_reason"],
+            ReasonCode.REQUEST_DEADLINE_EXCEEDED.value,
+        )
+        self.assertEqual(self.report_budgets, [])
+        self.assertNotIn("answer", state)
+
+    def test_a_boundary_is_offered_only_what_is_left(self) -> None:
+        spent = 5.0
+        graph = self._graph([_documents(HIGH_SCORE)])
+
+        with self._clock(0.0, spent):
+            state = graph.invoke({"query": NORMAL_QUERY})
+
+        self.assertEqual(state["route"], "answered")
+        self.assertEqual(len(self.report_budgets), 1)
+        self.assertAlmostEqual(
+            self.report_budgets[0],
+            config.REQUEST_DEADLINE_SECONDS - spent,
+            places=6,
+        )
+
+    def test_the_rewrite_budget_is_smaller_than_the_request_deadline(
+        self,
+    ) -> None:
+        # Both boundaries draw on one budget, so the rewrite must be
+        # offered less than the whole deadline once time has passed.
+        graph = self._graph(
+            [
+                _documents(MEDIUM_SCORE),
+                _documents(ALIAS_FAIL_SCORE),
+                _documents(EXPANDED_PASS_SCORE),
+            ]
+        )
+
+        with self._clock(0.0, 2.0):
+            state = graph.invoke({"query": SLANG_QUERY})
+
+        self.assertEqual(state["route"], "answered")
+        self.assertEqual(len(self.rewrite_budgets), 1)
+        self.assertLess(
+            self.rewrite_budgets[0], config.REQUEST_DEADLINE_SECONDS
+        )
+
+    def test_a_state_without_a_stamp_is_untimed_rather_than_expired(
+        self,
+    ) -> None:
+        # A caller that reaches a node directly carries no stamp. The
+        # boundaries must then behave exactly as they did before the
+        # deadline existed, rather than being refused for a clock nobody
+        # started -- which a naive "elapsed = now - 0" would do.
+        self.assertIsNone(_remaining_budget({"query": NORMAL_QUERY}))
+        self.assertIsNone(_latency_ms({"query": NORMAL_QUERY}))
+
+    def test_the_deadline_record_carries_its_cost(self) -> None:
+        graph = self._graph([_documents(HIGH_SCORE)])
+
+        with self._clock(0.0, config.REQUEST_DEADLINE_SECONDS + 1.0):
+            graph.invoke({"query": NORMAL_QUERY})
+
+        record = self._log_records()[-1]
+        self.assertEqual(
+            record["reason"], ReasonCode.REQUEST_DEADLINE_EXCEEDED.value
+        )
+        self.assertGreaterEqual(
+            record["latency_ms"],
+            int(config.REQUEST_DEADLINE_SECONDS * 1000),
+        )
+        # The skip happened before any provider call was made.
+        self.assertEqual(record["llm_calls"], 0)
+
+    def test_a_spent_call_is_counted_in_the_record(self) -> None:
+        graph = self._graph(
+            [
+                _documents(MEDIUM_SCORE),
+                _documents(ALIAS_FAIL_SCORE),
+                _documents(EXPANDED_FAIL_SCORE),
+            ]
+        )
+
+        with self._clock(0.0, 1.0):
+            graph.invoke({"query": SLANG_QUERY})
+
+        record = self._log_records()[-1]
+        self.assertEqual(record["llm_calls"], 1)
 
 
 class TestGraphStructure(unittest.TestCase):

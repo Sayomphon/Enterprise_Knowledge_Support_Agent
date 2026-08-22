@@ -2,9 +2,11 @@
 
 The writer accepts only the allowlisted fields of the AGENTS.md section 8
 schema: query text, reason code, the two retrieval scores, top source
-ids, rewritten queries, and the count of deterministic alias variants
-searched. Secrets, system prompts, and provider payloads cannot pass
-through this interface because the signature does not accept them.
+ids, rewritten queries, the count of deterministic alias variants
+searched, and two request-cost figures -- elapsed milliseconds and
+provider calls spent. Secrets, system prompts, and provider payloads
+cannot pass through this interface because the signature does not accept
+them.
 
 Writing stays best-effort -- a filesystem failure must never break a user
 request -- but it is no longer silent: the writer reports the outcome so
@@ -51,6 +53,8 @@ def log_fallback_event(
     top_sources: Sequence[str],
     rewritten_queries: Sequence[str],
     alias_query_count: int = 0,
+    latency_ms: int | None = None,
+    llm_calls: int = 0,
     log_path: str | Path | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> LogWriteResult:
@@ -77,6 +81,13 @@ def log_fallback_event(
             expansion searched, zero outside the medium band. It is what
             distinguishes "expansion found nothing" from "no expansion
             ran" when reading a fallback back.
+        latency_ms: Wall-clock milliseconds the request spent before it
+            degraded, or ``None`` when the caller tracked no start. It
+            is what makes a deadline-exceeded record checkable rather
+            than merely asserted.
+        llm_calls: Provider calls this request actually spent. Zero on
+            every deterministic route, and the number an operator needs
+            to tell a rewrite that ran from one that was skipped.
         log_path: Destination override used by tests so they never write
             into the real ``logs/`` directory; defaults to
             ``config.FALLBACK_LOG_PATH``.
@@ -100,6 +111,8 @@ def log_fallback_event(
             "top_sources": list(top_sources),
             "rewritten_queries": list(rewritten_queries),
             "alias_query_count": alias_query_count,
+            "latency_ms": latency_ms,
+            "llm_calls": llm_calls,
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:

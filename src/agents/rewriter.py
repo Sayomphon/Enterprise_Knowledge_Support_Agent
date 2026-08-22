@@ -56,11 +56,17 @@ class RewriteResult(BaseModel):
     )
 
 
-def safe_rewrite(query: str) -> tuple[list[str], str | None]:
+def safe_rewrite(
+    query: str, *, budget_seconds: float | None = None
+) -> tuple[list[str], str | None]:
     """Propose cleaned search variants for one medium-band query.
 
     Args:
         query: The guardrail-normalized original user query.
+        budget_seconds: What is left of the request deadline, which
+            trims this boundary's timeout. The graph skips this call
+            entirely once the budget is gone, so a value here is always
+            enough to be worth attempting.
 
     Returns:
         A ``(candidate_queries, failure_reason)`` pair. The candidates are
@@ -79,9 +85,9 @@ def safe_rewrite(query: str) -> tuple[list[str], str | None]:
         to remove.
     """
     try:
-        structured_llm = get_rewrite_llm().with_structured_output(
-            RewriteResult, method="json_schema"
-        )
+        structured_llm = get_rewrite_llm(
+            budget_seconds=budget_seconds
+        ).with_structured_output(RewriteResult, method="json_schema")
         result = structured_llm.invoke(
             [
                 SystemMessage(content=REWRITER_SYSTEM_PROMPT),

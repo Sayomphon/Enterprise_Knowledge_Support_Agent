@@ -11,6 +11,12 @@ invalid branch routes to fallback -- never straight to ``END``. Reporter output 
 public ``answer`` (remediation plan Finding 5). Every threshold is read
 from ``src.config``; no number lives in this module.
 
+One request deadline covers both LLM boundaries: each is offered only
+what is left of ``config.REQUEST_DEADLINE_SECONDS``, the optional rewrite
+is skipped once nothing is left, and a reporter reached that late
+degrades as a service state rather than starting a call the employee
+will not wait for.
+
 Credentials are checked at the LLM boundary, not at start-up, so the
 zero-LLM routes stay usable without a key; a credential missing at the
 reporter becomes its own reason code rather than a thin-evidence verdict
@@ -22,6 +28,7 @@ so the response text can stay truthful (Finding 7).
 from __future__ import annotations
 
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal, Protocol
@@ -51,15 +58,25 @@ from src.schemas import Document, GroundedAnswer, PipelineState, RetrievedDocume
 class Rewriter(Protocol):
     """The rewrite seam: a query in, candidates and a failure flag out."""
 
-    def __call__(self, query: str) -> tuple[list[str], str | None]:
-        """Propose search variants for one medium-band query."""
+    def __call__(
+        self, query: str, *, budget_seconds: float | None = None
+    ) -> tuple[list[str], str | None]:
+        """Propose search variants for one medium-band query.
+
+        ``budget_seconds`` is what is left of the request deadline; an
+        implementation that reaches no provider may ignore it.
+        """
 
 
 class Reporter(Protocol):
     """The generation seam: a query and its evidence in, a draft out."""
 
     def __call__(
-        self, query: str, retrieved: Sequence[RetrievedDocument]
+        self,
+        query: str,
+        retrieved: Sequence[RetrievedDocument],
+        *,
+        budget_seconds: float | None = None,
     ) -> GroundedAnswer:
         """Draft an unvalidated candidate answer from the evidence."""
 
@@ -247,6 +264,52 @@ def _top_source_ids(state: PipelineState) -> list[str]:
     ]
 
 
+def _elapsed_seconds(state: PipelineState) -> float | None:
+    """Return how long this request has been running, or ``None``.
+
+    Args:
+        state: Pipeline state, normally carrying the monotonic stamp the
+            first node wrote.
+
+    Returns:
+        Seconds since the stamp, or ``None`` when a caller invoked a
+        node directly and there is no stamp to measure from. Callers
+        treat that as "no deadline", which is the same behaviour these
+        boundaries had before the deadline existed.
+    """
+    started = state.get("request_started_at")
+    if started is None:
+        return None
+    return time.monotonic() - float(started)
+
+
+def _remaining_budget(state: PipelineState) -> float | None:
+    """Return what is left of the request deadline, or ``None``.
+
+    The two LLM boundaries are sequential on the same synchronous
+    request, so their own timeouts bound one stalled call each and say
+    nothing about the request that contains both. This is the shared
+    ceiling: whatever it returns is what the next boundary may spend.
+
+    Args:
+        state: Pipeline state after the guardrail node stamped it.
+
+    Returns:
+        Remaining seconds, which may be zero or negative when the
+        deadline has passed, or ``None`` when the request is untimed.
+    """
+    elapsed = _elapsed_seconds(state)
+    if elapsed is None:
+        return None
+    return config.REQUEST_DEADLINE_SECONDS - elapsed
+
+
+def _latency_ms(state: PipelineState) -> int | None:
+    """Return the request's elapsed milliseconds for telemetry."""
+    elapsed = _elapsed_seconds(state)
+    return None if elapsed is None else int(elapsed * 1000)
+
+
 def _degraded(node_name: str, exc: Exception, reason: ReasonCode) -> dict[str, object]:
     """Turn a crash inside a deterministic node into a fallback reason.
 
@@ -314,7 +377,14 @@ def build_graph(
     documents_by_id = {document.source_id: document for document in documents}
 
     def input_guardrail_node(state: PipelineState) -> dict[str, object]:
-        """Screen the raw query deterministically before any other work."""
+        """Screen the raw query deterministically before any other work.
+
+        This is also where the request clock starts. It is stamped
+        before the screen runs rather than after, so the deadline covers
+        everything the employee waits for, not everything after the part
+        that is already fast.
+        """
+        started_at = time.monotonic()
         result = screen_query(state["query"])
         if not result.ok:
             # The normalized form travels on the blocked branch too. It is
@@ -326,9 +396,13 @@ def build_graph(
                 "route": "blocked",
                 "guardrail_reason": result.reason,
                 "query": result.normalized_query,
+                "request_started_at": started_at,
             }
         # Every later stage sees only the normalized form of the query.
-        return {"query": result.normalized_query}
+        return {
+            "query": result.normalized_query,
+            "request_started_at": started_at,
+        }
 
     def refuse_node(state: PipelineState) -> dict[str, object]:
         """Log the blocked request; the refusal text itself is fixed."""
@@ -339,6 +413,8 @@ def build_graph(
             expanded_retrieval_score=None,
             top_sources=[],
             rewritten_queries=[],
+            latency_ms=_latency_ms(state),
+            llm_calls=state.get("llm_calls", 0),
             log_path=log_path,
         )
         return {"telemetry_logged": write.ok}
@@ -448,8 +524,33 @@ def build_graph(
         can reach neither the retriever nor the JSONL log: it is model
         output about the employee's question, and one reason to reject it
         is that it may have absorbed an injected instruction.
+
+        The rewrite is the optional half of a medium-band request, so it
+        is also the half the request deadline gives up first: with no
+        budget left the call is not made at all, and the request degrades
+        to the alias-expanded retrieval it already has (AGENTS.md
+        section 4, invariant 8).
         """
-        candidates, failure_reason = rewrite(state["query"])
+        budget = _remaining_budget(state)
+        if budget is not None and budget <= 0:
+            print(
+                "rewrite_node: skipped, request deadline exhausted",
+                file=sys.stderr,
+            )
+            return {
+                "route": "rewrite",
+                "rewritten_queries": [],
+                "rewrite_rejected": False,
+                # Its own reason, not the low-score one: the corpus was
+                # never asked a second question, so reporting thin
+                # evidence would describe an experiment that did not run.
+                "rewrite_failure_reason": (
+                    ReasonCode.REQUEST_DEADLINE_EXCEEDED.value
+                ),
+            }
+        candidates, failure_reason = rewrite(
+            state["query"], budget_seconds=budget
+        )
         validation = validate_rewrites(
             state["query"], candidates, state.get("scope_topics", [])
         )
@@ -457,6 +558,7 @@ def build_graph(
             "route": "rewrite",
             "rewritten_queries": list(validation.accepted_queries),
             "rewrite_rejected": validation.reason is not None,
+            "llm_calls": state.get("llm_calls", 0) + 1,
         }
         if failure_reason is not None:
             updates["rewrite_failure_reason"] = failure_reason
@@ -528,10 +630,26 @@ def build_graph(
         updates: dict[str, object] = {}
         if state.get("route") != "rewrite":
             updates["route"] = "direct_answer"
+        budget = _remaining_budget(state)
+        if budget is not None and budget <= 0:
+            # Unlike the rewrite, this boundary produces the answer, so
+            # skipping it ends the request -- as a service state, which
+            # is what an exhausted deadline is.
+            print(
+                "report_node: skipped, request deadline exhausted",
+                file=sys.stderr,
+            )
+            updates["fallback_reason"] = (
+                ReasonCode.REQUEST_DEADLINE_EXCEEDED.value
+            )
+            return updates
         try:
             updates["candidate_answer"] = report(
-                state["query"], state["answer_evidence"]
+                state["query"],
+                state["answer_evidence"],
+                budget_seconds=budget,
             )
+            updates["llm_calls"] = state.get("llm_calls", 0) + 1
         # Caught before the broad handler so the two stay distinguishable:
         # an unconfigured service is an operator problem, and telling the
         # employee to contact HR about missing evidence would send them
@@ -616,6 +734,12 @@ def build_graph(
             top_sources=_top_source_ids(state),
             rewritten_queries=state.get("rewritten_queries", []),
             alias_query_count=len(state.get("alias_expansion_queries", [])),
+            # Cost travels with the reason: a deadline record that does
+            # not say how long the request took cannot be checked, and a
+            # call count separates a rewrite that ran from one that the
+            # budget skipped.
+            latency_ms=_latency_ms(state),
+            llm_calls=state.get("llm_calls", 0),
             log_path=log_path,
         )
         # Clearing the candidate is part of the fallback, not tidiness:

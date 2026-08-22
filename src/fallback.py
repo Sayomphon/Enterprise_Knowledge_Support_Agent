@@ -36,6 +36,9 @@ class ReasonCode(enum.StrEnum):
         - one for an LLM route reached without configured credentials,
           which is a service state and must never be reported to the
           employee as thin evidence (remediation plan Finding 8)
+        - one for a boundary reached with none of the request deadline
+          left, which is the same kind of fact: the stage did not run,
+          so the corpus was never asked
     """
 
     PROMPT_INJECTION = "prompt_injection"
@@ -57,6 +60,7 @@ class ReasonCode(enum.StrEnum):
     INSUFFICIENT_REPORTER_EVIDENCE = "insufficient_reporter_evidence"
     UNSUPPORTED_NUMERIC_CLAIM = "unsupported_numeric_claim"
     LLM_NOT_CONFIGURED = "llm_not_configured"
+    REQUEST_DEADLINE_EXCEEDED = "request_deadline_exceeded"
 
 
 REFUSAL_TEXT = (
@@ -102,7 +106,6 @@ SERVICE_UNAVAILABLE_TEXT = f"{_SERVICE_UNAVAILABLE_BODY}\n{_LOGGED_NOTICE}"
 SERVICE_UNAVAILABLE_TEXT_UNLOGGED = (
     f"{_SERVICE_UNAVAILABLE_BODY}\n{_LOG_UNAVAILABLE_NOTICE}"
 )
-
 
 def refusal_text_for(reason: str) -> str:
     """Select the fixed blocked-response text for a guardrail reason.

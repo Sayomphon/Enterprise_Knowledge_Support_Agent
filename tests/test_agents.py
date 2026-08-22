@@ -13,12 +13,55 @@ from unittest import mock
 
 from src.agents import (
     MissingLlmCredentialError,
+    _effective_timeout,
     credential_fingerprint,
     get_llm,
 )
+from src.config import LLM_TIMEOUT_SECONDS
 
 KEY_VARIABLE = "OPENAI_API_KEY"
 FAKE_KEY = "sk-test-not-a-real-key"
+
+
+class TestBoundaryBudget(unittest.TestCase):
+    """A boundary may never be given more time than the request has left."""
+
+    def test_no_budget_leaves_the_configured_timeout_alone(self) -> None:
+        self.assertEqual(_effective_timeout(30.0, None), 30.0)
+
+    def test_a_smaller_budget_replaces_the_configured_timeout(self) -> None:
+        self.assertEqual(_effective_timeout(30.0, 12.7), 12.0)
+
+    def test_a_larger_budget_does_not_extend_the_boundary(self) -> None:
+        self.assertEqual(_effective_timeout(10.0, 40.0), 10.0)
+
+    def test_whole_seconds_keep_the_client_cache_small(self) -> None:
+        # Requests differing by milliseconds must share one cached
+        # client rather than each building their own.
+        self.assertEqual(
+            _effective_timeout(30.0, 12.10), _effective_timeout(30.0, 12.99)
+        )
+
+    def test_a_vanishing_budget_never_becomes_an_impossible_timeout(
+        self,
+    ) -> None:
+        # The graph skips a boundary whose budget is gone; if one is
+        # reached anyway, a sub-second timeout would fail every call.
+        self.assertEqual(_effective_timeout(30.0, 0.4), 1.0)
+
+    def test_the_budget_reaches_the_constructed_client(self) -> None:
+        with mock.patch("src.agents.ChatOpenAI") as client:
+            with mock.patch.dict(os.environ, {KEY_VARIABLE: FAKE_KEY}):
+                import src.agents as agents
+
+                agents._build_llm.cache_clear()
+                self.addCleanup(agents._build_llm.cache_clear)
+                get_llm(budget_seconds=8.0)
+
+        self.assertEqual(client.call_args.kwargs["timeout"], 8.0)
+        self.assertLess(
+            client.call_args.kwargs["timeout"], LLM_TIMEOUT_SECONDS
+        )
 
 
 class TestCredentialBoundary(unittest.TestCase):

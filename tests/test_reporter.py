@@ -14,6 +14,7 @@ import unittest
 from unittest import mock
 
 from langchain_core.messages import SystemMessage
+from pydantic import ValidationError
 
 from src.agents.reporter import (
     REPORTER_SYSTEM_PROMPT,
@@ -21,7 +22,12 @@ from src.agents.reporter import (
     format_evidence,
     generate_answer,
 )
-from src.schemas import AnswerClaim, GroundedAnswer, RetrievedDocument
+from src.schemas import (
+    MAX_ANSWER_CLAIMS,
+    AnswerClaim,
+    GroundedAnswer,
+    RetrievedDocument,
+)
 
 QUERY = "เบิกค่าแท็กซี่หลังทำ OT ต้องทำอย่างไร"
 POLICY_CONTENT = "ยื่นคำขอผ่าน Expense Portal ภายใน 30 วัน"
@@ -234,6 +240,49 @@ class TestReporterPrompt(unittest.TestCase):
 
     def test_prompt_offers_the_insufficient_evidence_exit(self) -> None:
         self.assertIn(PROMPT_INSUFFICIENT_EVIDENCE, REPORTER_SYSTEM_PROMPT)
+
+    def test_prompt_states_the_claim_limit_the_schema_enforces(
+        self,
+    ) -> None:
+        # The schema rejects an over-long answer; the prompt is what
+        # keeps the model from producing one and losing the request.
+        self.assertIn(str(MAX_ANSWER_CLAIMS), REPORTER_SYSTEM_PROMPT)
+
+
+class TestClaimCap(unittest.TestCase):
+    """An answer may carry only as many claims as it needs.
+
+    A nine-claim answer measured 29.6 seconds to generate and read like
+    a policy dump. The cap travels into the JSON schema sent to the
+    provider, so the model is told the bound rather than trimmed
+    afterwards -- silently keeping the first six would render a
+    truncated answer as a complete one.
+    """
+
+    @staticmethod
+    def _claims(count: int) -> list[AnswerClaim]:
+        return [
+            AnswerClaim(text=f"{POLICY_CONTENT} {index}", source_ids=["FIN-001"])
+            for index in range(count)
+        ]
+
+    def test_an_answer_at_the_cap_is_accepted(self) -> None:
+        candidate = GroundedAnswer(claims=self._claims(MAX_ANSWER_CLAIMS))
+
+        self.assertEqual(len(candidate.claims), MAX_ANSWER_CLAIMS)
+
+    def test_an_answer_over_the_cap_fails_to_parse(self) -> None:
+        with self.assertRaises(ValidationError):
+            GroundedAnswer(claims=self._claims(MAX_ANSWER_CLAIMS + 1))
+
+    def test_the_cap_reaches_the_provider_schema(self) -> None:
+        # The bound is part of the contract sent with the request, not a
+        # check applied only to what comes back.
+        schema = GroundedAnswer.model_json_schema()
+
+        self.assertEqual(
+            schema["properties"]["claims"]["maxItems"], MAX_ANSWER_CLAIMS
+        )
 
 
 if __name__ == "__main__":

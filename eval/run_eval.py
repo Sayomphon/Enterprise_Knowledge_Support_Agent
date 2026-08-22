@@ -308,7 +308,12 @@ def _cached_rewriter(rewrite_cache: dict[str, list[str]]):
         degrades exactly as it would in production.
     """
 
-    def rewrite(query: str) -> tuple[list[str], str | None]:
+    def rewrite(
+        query: str, *, budget_seconds: float | None = None
+    ) -> tuple[list[str], str | None]:
+        # The budget is accepted and ignored: replaying a cache costs no
+        # provider time, so trimming it would only make the harness
+        # behave differently from the pipeline it measures.
         candidates = rewrite_cache.get(query)
         if not candidates:
             return [], ReasonCode.REWRITE_FAILURE.value
@@ -318,7 +323,10 @@ def _cached_rewriter(rewrite_cache: dict[str, list[str]]):
 
 
 def _stub_reporter(
-    query: str, retrieved: Sequence[RetrievedDocument]
+    query: str,
+    retrieved: Sequence[RetrievedDocument],
+    *,
+    budget_seconds: float | None = None,
 ) -> GroundedAnswer:
     """Stand in for the generation seam without calling a provider.
 
@@ -332,6 +340,8 @@ def _stub_reporter(
     Args:
         query: The guardrail-normalized query, unused here.
         retrieved: Answer evidence chosen by the evidence selector.
+        budget_seconds: Remaining request budget, unused: this seam
+            reaches no provider and so cannot exceed a deadline.
 
     Returns:
         A candidate answer citing the authoritative evidence.
@@ -949,8 +959,10 @@ def _promoted_answer(candidate: GroundedAnswer, case: dict) -> str:
         # reason code or ``None``, and a bare ``True`` would have been
         # written straight into the log the day the probe or a threshold
         # moved.
-        rewriter=lambda query: ([], None),
-        reporter=lambda query, retrieved: candidate,
+        rewriter=lambda query, *, budget_seconds=None: ([], None),
+        reporter=(
+            lambda query, retrieved, *, budget_seconds=None: candidate
+        ),
     )
     state = graph.invoke({"query": _citation_case_query(case)})
     return str(state.get("answer", ""))

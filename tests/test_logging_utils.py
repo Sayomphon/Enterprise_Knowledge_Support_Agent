@@ -33,6 +33,8 @@ LOG_SCHEMA_KEYS = [
     "top_sources",
     "rewritten_queries",
     "alias_query_count",
+    "latency_ms",
+    "llm_calls",
 ]
 
 
