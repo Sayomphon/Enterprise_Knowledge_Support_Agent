@@ -56,12 +56,12 @@ This prototype treats that failure as the thing to engineer against:
   claims into `candidate_answer`; a validator checks each one against this
   request's evidence, and a renderer emits the `[SOURCE-ID]` markup from
   validated ids only. A failed check produces no public text at all.
-* **Every refusal is logged with a reason code**, one of twenty — so an
+* **Every refusal is logged with a reason code**, one of twenty-three — so an
   unanswered question becomes a corpus gap you can act on rather than a bad
   answer nobody noticed.
-* **The numbers are small and labelled.** 25 calibration, 14 held-out, 42
-  guardrail, 20 near-domain, 17 live answer cases. The held-out strict gate
-  exits `1` on one known coverage miss, and
+* **The numbers are small and labelled.** 25 calibration, 14 + 14 held-out, 56
+  guardrail, 28 near-domain, 17 live answer cases. The first held-out strict
+  gate exits `1` on one known coverage miss, and
   [section 5](#5-evaluation-scorecard) says so rather than rounding it away.
 
 Requirement traceability is in
@@ -83,7 +83,7 @@ python -m unittest discover -s tests
 
 ```text
 ----------------------------------------------------------------------
-Ran 484 tests in 2.244s
+Ran 579 tests in 2.869s
 
 OK (skipped=5)
 ```
@@ -101,6 +101,13 @@ python main.py --check                      # corpus + credential readiness
 python main.py "ขั้นตอนการเบิกค่าแท็กซี่หลังทำ OT ต้องทำอย่างไร"
 streamlit run app.py                        # assistant on /, audit console on /console
 ```
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs exactly these
+commands plus the four offline gates on Python 3.11 and 3.12 for every push and
+pull request — install from the pins, `pip check`, the suite, each gate as its
+own step, a CLI query, and a Streamlit health check. The live answer set is not
+in CI: it calls a real provider and costs money. No run exists yet, because this
+repository has no remote, so no badge is claimed here.
 
 Windows PowerShell differs only in activate and copy
 (`.\.venv\Scripts\Activate.ps1`, `Copy-Item .env.example .env`); full usage is
@@ -264,15 +271,16 @@ sixth calls a real provider and is the only thing here that can fail because an
 | Fixture | Cases | Job | `--strict` |
 |---|---:|---|---|
 | [`retrieval_calibration.json`](eval/retrieval_calibration.json) | 25 | **Tuning only** — thresholds, n-grams, alias catalog | exit `0` |
-| [`retrieval_heldout.json`](eval/retrieval_heldout.json) | 14 | **Reporting only** — run after thresholds freeze | exit `1` (one known miss) |
-| [`guardrail_cases.json`](eval/guardrail_cases.json) | 42 | 21 attacks / 21 benign lookalikes | exit `0` |
-| [`near_domain_cases.json`](eval/near_domain_cases.json) | 20 | 14 near-domain hard negatives / 6 benign twins | exit `0` |
-| [`citation_cases.json`](eval/citation_cases.json) + [`rewrite_cases.json`](eval/rewrite_cases.json) | 23 + 20 | Answer-contract and rewrite-validator verdicts | exit `0` |
+| [`retrieval_heldout.json`](eval/retrieval_heldout.json) | 14 | **Read during an audit** — kept as a regression fixture | exit `1` (one known miss) |
+| [`retrieval_heldout_v2.json`](eval/retrieval_heldout_v2.json) | 14 | **Reporting only** — written blind, run once after thresholds froze | exit `0` |
+| [`guardrail_cases.json`](eval/guardrail_cases.json) | 56 | 28 attacks / 28 benign lookalikes | exit `0` |
+| [`near_domain_cases.json`](eval/near_domain_cases.json) | 28 | 20 near-domain hard negatives / 8 benign twins | exit `0` |
+| [`citation_cases.json`](eval/citation_cases.json) + [`rewrite_cases.json`](eval/rewrite_cases.json) | 30 + 20 | Answer-contract and rewrite-validator verdicts | exit `0` |
 | [`answer_cases.json`](eval/answer_cases.json) | 17 × 3 runs | **Live** — fact anchors from the corpus | reported, see below |
 
 ```bash
 python eval/run_eval.py --set calibration --strict   # also: near_domain, guardrail, contracts
-python eval/run_eval.py --set heldout --strict       # reporting only, run last
+python eval/run_eval.py --set heldout_v2 --strict     # reporting only, run last
 python eval/run_eval.py --set answers --live         # costs money, asks first
 ```
 
@@ -286,18 +294,27 @@ Evaluation panel parses, so the panel and this table quote the same run.
 
 ### Retrieval and routing
 
-| Metric | Calibration (25) | Held-out (14) | Near-domain (20) |
-|---|---:|---:|---:|
-| Retrieval Hit@3 | 16/16 | 7/7 | 6/6 |
-| Retrieval Recall@1 | 15/16 | 7/7 | 5/6 |
-| Retrieval MRR | 0.969 | 1.000 | 0.917 |
-| Answer-route Selection Precision | 16/16 | 6/6 | 6/6 |
-| Answer-route Coverage | 16/16 | **6/7** | 6/6 |
-| False Fallback Rate | 0/16 | 1/7 | 0/6 |
-| OOD Fallback Accuracy | 4/4 | 3/3 | n/a |
-| Unsupported In-domain Fallback Accuracy | 5/5 | 4/4 | 14/14 |
-| Authoritative Evidence Coverage Rate | 16/16 | 6/6 | 6/6 |
-| Rewrite Recovery Rate | 6/6 | 1/2 | 2/2 |
+| Metric | Calibration (25) | Held-out (14, read) | Held-out v2 (14, blind) | Near-domain (28) |
+|---|---:|---:|---:|---:|
+| Retrieval Hit@3 | 16/16 | 7/7 | 7/7 | 8/8 |
+| Retrieval Recall@1 | 15/16 | 7/7 | 7/7 | 7/8 |
+| Retrieval MRR | 0.969 | 1.000 | 1.000 | 0.938 |
+| Answer-route Selection Precision | 16/16 | 6/6 | 7/7 | 8/8 |
+| Answer-route Coverage | 16/16 | **6/7** | 7/7 | 8/8 |
+| False Fallback Rate | 0/16 | 1/7 | 0/7 | 0/8 |
+| OOD Fallback Accuracy | 4/4 | 3/3 | 3/3 | n/a |
+| Unsupported In-domain Fallback Accuracy | 5/5 | 4/4 | 4/4 | 20/20 |
+| Authoritative Evidence Coverage Rate | 16/16 | 6/6 | 7/7 | 8/8 |
+| Rewrite Recovery Rate | 6/6 | 1/2 | 1/1 | 2/2 |
+
+There are two held-out splits because the first one was read during a code
+audit, and a reporting set that has been looked at is a regression fixture, not
+generalisation evidence. `retrieval_heldout_v2.json` was written afterwards with
+the same category mix, while every threshold was already frozen, and run once.
+Its clean sheet rests on seven answerable cases whose wording came from reading
+the corpus — the direction that flatters recall — so what it supports is the
+narrow claim it can carry: on 14 cases never used for tuning, no out-of-domain
+question and no in-domain hard negative was answered.
 
 The calibration split grew from 21 cases to 25 this round: four paraphrased
 receipt questions, added because the one held-out coverage miss is that shape,
@@ -315,16 +332,19 @@ three single-character Thai edits per correctly-spelled answerable query):
 | Injected typos | 0 | 1 | 2 | 3 |
 |---|---:|---:|---:|---:|
 | Hit@3, calibration (7) | 7/7 | 7/7 | 7/7 | 7/7 |
-| Hit@3, near-domain (5) | 5/5 | 5/5 | 5/5 | 5/5 |
+| Hit@3, near-domain (7) | 7/7 | 7/7 | 7/7 | 7/7 |
 | Hit@3, held-out (4) | 4/4 | 4/4 | 4/4 | 4/4 |
 | routed `answered`, calibration | 7/7 | 7/7 | 7/7 | 6/7 |
-| routed `answered`, near-domain | 5/5 | 4/5 | 4/5 | 4/5 |
+| routed `answered`, near-domain | 7/7 | 3/7 | 7/7 | 5/7 |
 
-Retrieval does not degrade at all; the **route** does, on two cases whose score
+Retrieval does not degrade at all; the **route** does, on cases whose score
 falls under a threshold while the right document is still in the top three —
 the pipeline preferring a fallback to an answer it is no longer confident in.
-The sample is four to seven cases per split with one probe per level, so this
-shows the index degrades gracefully, not by how much.
+The near-domain row is not monotonic, and that is the honest shape of the
+measurement rather than a finding: it is one probe per case per level on seven
+cases, so a single edit landing on a decisive word moves it further than the
+level itself does. What this shows is that the index degrades gracefully; it
+does not show by how much.
 
 ### Guardrail and answer contract
 
@@ -355,19 +375,20 @@ against the quote rather than against the whole document.
 ### Live answer quality
 
 17 questions with fact anchors drawn from the corpus, run 3 times each against
-the real pipeline on `gpt-5-mini` — 51 invocations. Re-measured after the P0
-claim-span contract landed; full transcript, per-run detail and the before/after
-attribution in [`eval/ANSWER_RESULTS.md`](eval/ANSWER_RESULTS.md).
+the real pipeline on `gpt-5-mini` — 51 invocations. Measured three times: before
+the P0 claim-span contract, after it, and again after P1. Full transcripts,
+per-run detail and the attribution in
+[`eval/ANSWER_RESULTS.md`](eval/ANSWER_RESULTS.md).
 
-| Metric | Before P0 | After P0 | Reading |
-|---|---:|---:|---|
-| Fact Recall | 52/57 | **46/57** | Six fact-instances lost; **one** of them to the span rule, five to the medium-band rewrite boundary — attributed run by run below |
-| Fact-Citation Alignment | 52/52 | **46/46** | Every stated fact was cited to a document that carries it |
-| Alien Number Rate | 0/51 | 0/51 | No run introduced a figure absent from its evidence |
-| Forbidden Fact Rate | 0/51 | 0/51 | The deliberately-unconfirmed kiosk case was never claimed as settled |
-| Correct Refusal Rate | 3/3 | 3/3 | All three refused at the scope gate, 0.0s, zero provider calls |
-| Route Stability | 16/17 | **15/17** | Both unstable cases are the documented medium-band non-determinism |
-| Latency p50 / p95 | 6.6s / 27.7s | **10.9s / 29.9s** | Copying a span costs time; p95 now sits 0.1s inside the 30s reporter timeout |
+| Metric | Before P0 | After P0 | After P1 | Reading |
+|---|---:|---:|---:|---|
+| Fact Recall | 52/57 | **46/57** | 48/57 | Six fact-instances lost to P0; **one** of them to the span rule, five to the medium-band rewrite boundary — attributed run by run below. The two that returned after P1 are variance, not a fix: that round changed no prompt and no contract |
+| Fact-Citation Alignment | 52/52 | **46/46** | 48/48 | Every stated fact was cited to a document that carries it |
+| Alien Number Rate | 0/51 | 0/51 | 0/51 | No run introduced a figure absent from its evidence |
+| Forbidden Fact Rate | 0/51 | 0/51 | 0/51 | The deliberately-unconfirmed kiosk case was never claimed as settled |
+| Correct Refusal Rate | 3/3 | 3/3 | 3/3 | All three refused at the scope gate, 0.0s, zero provider calls |
+| Route Stability | 16/17 | **15/17** | 15/17 | Both unstable cases are the documented medium-band non-determinism |
+| Latency p50 / p95 | 6.6s / 27.7s | **10.9s / 29.9s** | 8.6s / **58.6s** | The tail, not the median, is the thing to read: one run reached 94.4s — see the deadline limitation in [section 7](#7-limitations-and-production-next-steps) |
 
 **Where the six facts went.** Exactly three cases changed route between the two
 transcripts, and the reason code each one recorded is what attributes them:
@@ -572,14 +593,19 @@ by name in those tests.
   (`AGENTS.md` §10). The live set was re-measured after the change: it cost one
   fact-instance out of 57, and p95 latency moved to 0.1s inside the reporter
   timeout, which is the number worth watching next.
-* **The request deadline is a ceiling, not a cancellation.**
-  `REQUEST_DEADLINE_SECONDS` (45s) is shared by both LLM boundaries: each is
-  offered only what is left of it, and one reached with nothing left is skipped
+* **The request deadline is a ceiling, not a cancellation — and retries
+  multiply it.** `REQUEST_DEADLINE_SECONDS` (45s) is shared by both LLM
+  boundaries: each is offered only what is left of it, the per-call timeout is
+  trimmed to that remainder, and a boundary reached with nothing left is skipped
   as `request_deadline_exceeded` rather than started. What it does not do is
-  interrupt a call already in flight — a boundary that starts with 40s of budget
-  and a 30s timeout can still finish at 70s of wall clock. Bounding that needs
-  cancellation at the provider boundary, which the synchronous `graph.invoke`
-  path does not have.
+  interrupt a call in flight, or divide the remainder by the attempt count. With
+  `LLM_MAX_RETRIES=2`, a rewrite spending 10s x 2 leaves the reporter 25s, which
+  it may spend three times: the P1 live run measured **94.4s** on one answered
+  request and 91.4s on one that ended in `reporter_failure`. The bound this
+  design gives is "a request is bounded", not "a request finishes within 45
+  seconds". Fixing it means dividing the budget by the attempt count or
+  cancelling at the provider boundary, which the synchronous `graph.invoke` path
+  does not offer.
 * **The Streamlit layer is only partly under test.** Its pure formatters live in
   `ui/formatting.py` and are asserted in
   [`tests/test_ui_formatting.py`](tests/test_ui_formatting.py) — score bands

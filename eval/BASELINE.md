@@ -1364,8 +1364,173 @@ was lost to `unsupported_claim_span` — the new contract doing its job on
 per-case detail is in `eval/ANSWER_RESULTS.md`.
 
 ## What is not covered by this snapshot
-* **P1 and P2 are not started.** Log redaction and file mode, the `llm_calls`
-  telemetry overcount at `rewrite_node`, the UI and validator exception seams,
-  the blind held-out v2 set, CI, and the supply-chain work all remain open.
+* **P1 and P2 are not started at the time of this snapshot.** P1 landed in
+  Phase 13 below; P2 (dependency lockfile, SBOM, CVE and secret scanning)
+  remains open.
 * **The eligibility gate is a list.** It refuses what `FIN-001` does not grant,
   and it is skipped when a question also resolves the receipt topic.
+
+---
+
+# Phase 13 snapshot — Task 1 audit remediation, P1 (2026-08-22)
+
+The four P1 workstreams of `TASK1_REMEDIATION_PLAN.md`, in the plan's commit
+order: telemetry accuracy, then the two containment seams, then the sink's
+privacy, then the regressions and the second held-out split, then CI.
+
+No threshold moved in this round. That matters for the held-out claim below:
+the blind split was authored while every calibrated constant was already frozen
+at its Phase 12 value, and it was run once, afterwards.
+
+## What changed in the pipeline
+
+* **P1-9a — `llm_calls` counts only calls that happened.** `rewrite_node` added
+  `+1` unconditionally, while `safe_rewrite` returns `llm_not_configured`
+  without ever building a client. A provider error or a timeout still counts
+  one: there the call was made and failed.
+* **P1-9c — the two seams that could still escape `invoke`.** `screen_query` is
+  the first node and had no handler, and `validate_answer` was the only
+  deterministic stage without one. Both now degrade to `evidence_failure` with a
+  logged reason (invariant 9). The screen fails **closed**: `retrieve_original`
+  stands down when a reason code is already set, so an unscreened query reaches
+  neither the index nor a provider.
+* **P1-9b — the UI seam.** `ui/runtime._invoke_graph` absorbs anything that
+  escapes the graph runtime into the service-state the presentation layer
+  already draws, prints the exception **type** only, and writes no telemetry of
+  its own — logging is the graph's job (section 3).
+* **P1-8 — the telemetry sink is private, redacted and bounded.** Four
+  identifier shapes (Thai national id, account number, phone, email) are masked
+  in `query` and in `rewritten_queries` at the writer; the file is created
+  `0600` inside a `0700` directory and an existing `0644` file is narrowed on
+  the next write; the sink rolls over at `LOG_MAX_BYTES` keeping
+  `LOG_BACKUP_COUNT` pages.
+  Rotation introduced a defect of its own and the test caught it: the
+  `logs/*.jsonl` ignore rule does not match `fallback_queries.jsonl.1`, so a
+  rotated page of real questions had become committable. `.gitignore` now also
+  carries `logs/*.jsonl.*`, asserted by `git check-ignore` in the suite.
+* **P1-7 — the probes that had no test.** A search returning zero candidates
+  (previously only ever probed by hand) and an English question carried all the
+  way to a rendered, validated answer.
+* **P1-10 — `.github/workflows/ci.yml`.** Python 3.11 and 3.12, `pip check`,
+  `main.py --check`, the suite, the four offline gates each as its own step,
+  a CLI query and a real Streamlit health check. The live answer set is
+  deliberately absent from CI.
+
+## Measured results
+
+```text
+python -m unittest discover -s tests -v     Ran 579 tests, OK (skipped=5)
+                                            (545 before this round)
+
+python eval/run_eval.py --set guardrail   --strict   exit 0
+python eval/run_eval.py --set calibration --strict   exit 0
+python eval/run_eval.py --set near_domain --strict   exit 0
+python eval/run_eval.py --set contracts   --strict   exit 0
+```
+
+Every gate metric is unchanged from Phase 12, which is the point of running
+them here — this round touched telemetry, containment and the sink, and none of
+it was supposed to move a rate:
+
+| Gate | Metric | Value |
+|---|---|---:|
+| guardrail | Injection Block Rate | 1.000 (28/28) |
+| guardrail | Benign Pass Rate | 1.000 (28/28) |
+| calibration | Answer-route Coverage / Precision | 1.000 (16/16) / 1.000 (16/16) |
+| near_domain | Unsupported In-domain Fallback Accuracy | 1.000 (20/20) |
+| near_domain | Answer-route Coverage | 1.000 (8/8) |
+| contracts | Citation Provenance Validity Rate | 1.000 (30/30) |
+| contracts | Invalid Candidate Leakage Rate | 0.000 (0/24) |
+
+The suite and all four gates were also run with `OPENAI_API_KEY=` empty, which
+is the state CI runs in: same results, exit 0 throughout.
+
+## The second held-out split, run once
+
+`eval/retrieval_heldout_v2.json` — 14 cases in the same category mix as the
+original split (4 normal, 3 noisy, 3 out-of-domain, 4 in-domain unsupported),
+written after the first split had been read during the audit and therefore
+demoted to a regression fixture (section 10).
+
+| Metric | heldout (14, read) | heldout_v2 (14, blind) |
+|---|---:|---:|
+| Retrieval Hit@3 | 1.000 (7/7) | 1.000 (7/7) |
+| Retrieval Recall@1 | 1.000 (7/7) | 1.000 (7/7) |
+| Answer-route Selection Precision | 1.000 (6/6) | 1.000 (7/7) |
+| Answer-route Coverage | 0.857 (6/7) | 1.000 (7/7) |
+| False Fallback Rate | 0.143 (1/7) | 0.000 (0/7) |
+| OOD Fallback Accuracy | 1.000 (3/3) | 1.000 (3/3) |
+| Unsupported In-domain Fallback Accuracy | 1.000 (4/4) | 1.000 (4/4) |
+| `--strict` exit | 1 (`ho_noisy_03`) | 0 |
+
+**Read this conservatively.** Seven answerable cases is a small denominator, and
+the cases were written by reading the corpus, so their wording is closer to the
+documents than an employee's would be — the direction that flatters recall.
+What the split does support is narrower and still worth having: on 14 cases
+never used for tuning, no in-domain hard negative and no out-of-domain question
+was answered, which is the precision-first property the thresholds were chosen
+for. One case (`hv2_noisy_01`) was scored without a cached rewrite, so its
+medium band was measured on alias expansion alone.
+
+`ho_noisy_03` still misses at expanded 0.1986 against `FINAL_ANSWER_THRESHOLD`
+0.21, unchanged from Phase 11 and 12, and the gate still exits 1 on it. Nothing
+in this round tried to close that gap: lowering the threshold to pass a case
+from a reporting split is tuning on held-out data.
+
+## Live answer set, re-run once after P1
+
+17 cases x 3 runs on `gpt-5-mini`, transcript in
+`eval/answer_transcript_p1.json`. Per-case detail and the latency analysis are
+in `eval/ANSWER_RESULTS.md`.
+
+| Metric | After P0 | After P1 |
+|---|---:|---:|
+| Fact Recall | 0.807 (46/57) | 0.842 (48/57) |
+| Fact-Citation Alignment | 1.000 (46/46) | 1.000 (48/48) |
+| Alien Number Rate | 0.000 (0/51) | 0.000 (0/51) |
+| Forbidden Fact Rate | 0.000 (0/51) | 0.000 (0/51) |
+| Correct Refusal Rate | 1.000 (3/3) | 1.000 (3/3) |
+| Route Stability | 0.882 (15/17) | 0.882 (15/17) |
+| Latency p50 / p95 | 10.9s / 29.9s | 8.6s / 58.6s |
+
+**The recall difference is not a P1 result.** This round changed no prompt, no
+provider contract and no threshold, so two fact-instances returning and the P0
+run's single `unsupported_claim_span` not recurring are variance between two
+runs of a non-deterministic pipeline. What the run establishes is the absence
+of a regression on the safety metrics, which is what it was run for.
+
+The latency tail is the finding worth carrying forward: the slowest run reached
+94.4s against a 45s `REQUEST_DEADLINE_SECONDS`, because the deadline is checked
+before a boundary starts and trims the per-call timeout, but `LLM_MAX_RETRIES`
+multiplies whatever is left (rewrite 10s x 2, then reporter 25s x 3). Recorded
+here and in the README; fixing it is a change to the deadline design, not to
+P1.
+
+## What is not covered by this snapshot
+
+* **CI has never run.** The workflow is committed and every one of its steps was
+  executed locally, including the Streamlit health check, but the repository has
+  no remote, so no run exists on GitHub and no badge is claimed.
+* **Redaction is four regexes.** A name, an address, and a health detail in the
+  wording of a sick-leave question all still reach the sink. Identifiers typed
+  in Thai or fullwidth digits are covered — `\d` is Unicode-aware in Python, so
+  the length rules see them without the text being folded — except that a
+  Thai-digit phone number is masked by the account rule, under the wrong label.
+  Both behaviours are pinned by tests rather than assumed.
+* **Rotation is not concurrency-safe across processes.** Two processes that
+  reach the ceiling together can race on the rename; the loser reports a failed
+  write through `LogWriteResult` rather than crashing the request, and the
+  request survives either way.
+* **The console's node trace is drawn from the route, not from a per-node
+  record.** A request the UI seam caught never reached any node, yet the trace
+  panel still renders `input_guardrail` as passed, because that is what a
+  `fallback` route means to `_trace_rows`. The card above it says the service
+  was unavailable and the reason code is `evidence_failure`, so nothing the
+  employee reads is wrong; the ops panel is what is imprecise, and fixing it
+  needs per-node state the pipeline does not carry.
+* **The audit view reads the live page only.** `read_recent_events` tails the
+  sink itself, not its rotated pages, so the console shows an empty table for a
+  moment after a roll-over. The records are on disk in `.1`; nothing reads them
+  back into the UI.
+* **P2 is untouched** — no lockfile with hashes, no SBOM, no CVE audit, no
+  secret scanning.

@@ -365,3 +365,65 @@ attribution table above is what the two transcripts support: it names the reason
 code each lost run recorded, which is a fact, rather than assigning the drop to
 the newest change, which would be a guess. A rerun will not reproduce these
 numbers exactly.
+
+
+---
+
+# Re-measurement after P1, and what the wall clock showed (2026-08-22)
+
+Run once with approval after the P1 round: 17 cases x 3 runs on `gpt-5-mini`,
+transcript in [`answer_transcript_p1.json`](answer_transcript_p1.json).
+
+| Metric | Before P0 | After P0 | After P1 |
+|---|---:|---:|---:|
+| Fact Recall | 0.912 (52/57) | 0.807 (46/57) | 0.842 (48/57) |
+| Fact-Citation Alignment | 1.000 (52/52) | 1.000 (46/46) | 1.000 (48/48) |
+| Alien Number Rate | 0.000 (0/51) | 0.000 (0/51) | 0.000 (0/51) |
+| Forbidden Fact Rate | 0.000 (0/51) | 0.000 (0/51) | 0.000 (0/51) |
+| Correct Refusal Rate | 1.000 (3/3) | 1.000 (3/3) | 1.000 (3/3) |
+| Route Stability | 0.941 (16/17) | 0.882 (15/17) | 0.882 (15/17) |
+| Latency p50 / p95 | 6.6s / 27.7s | 10.9s / 29.9s | 8.6s / 58.6s |
+
+**Fact Recall did not improve because of P1.** The round changed no prompt, no
+provider contract and no threshold — it changed telemetry accuracy, two
+exception seams, and the log sink. Two fact-instances came back and one
+`unsupported_claim_span` from the P0 run did not recur; both are provider
+variance between two runs of a non-deterministic pipeline, and reporting them
+as a gain would be reading noise as signal. What the run does support is the
+absence of a regression: alignment, alien numbers, forbidden facts and correct
+refusals are all unchanged, on the same fixture.
+
+## The wall clock is the finding
+
+p95 nearly doubled and the slowest run reached **94.4s** (`ans_multi_01`,
+run 2, answered) — more than twice `REQUEST_DEADLINE_SECONDS` (45s). This is
+not a new defect and not variance; it is the known shape of the deadline,
+measured further than before. The deadline is a **ceiling checked before a
+boundary starts**, and the per-call timeout is trimmed to what is left of it —
+but neither cancels a call in flight, and neither divides by the retry count:
+
+```text
+rewrite   starts at t=0    budget 45s -> timeout min(10, 45) = 10s x 2 attempts = 20s
+reporter  starts at t=20s  budget 25s -> timeout min(30, 25) = 25s x 3 attempts = 75s
+                                                                       total  ~95s
+```
+
+`LLM_MAX_RETRIES=2` is the multiplier the arithmetic in `config.py` does not
+account for. The same shape produced `ans_chat_01` run 3: 91.4s of wall clock
+ending in `reporter_failure`.
+
+Two honest consequences:
+
+* The employee-facing claim to make is "a request is bounded", not "a request
+  finishes within 45 seconds". The README says the deadline does not interrupt
+  a call in flight; it now also has to say that retries multiply what is left.
+* Fixing it properly means dividing the remaining budget by the attempt count,
+  or cancelling at the provider boundary, which `graph.invoke` being
+  synchronous does not offer. Both are changes to the deadline design, not to
+  P1, so this round records the measurement rather than acting on it.
+
+## Reading this honestly
+
+Same caveats as the P0 re-measurement, and one more: p50 fell (10.9s -> 8.6s)
+while p95 doubled, on 51 runs. That is a distribution with a long tail being
+sampled twice, not a latency improvement.

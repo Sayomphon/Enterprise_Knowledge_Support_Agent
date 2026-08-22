@@ -1,0 +1,84 @@
+# Offline gates for every push and pull request.
+#
+# The point of this workflow is the one claim the repository could not
+# make on its own: that a clean environment, not this laptop, installs
+# the pinned dependencies and passes every deterministic gate. It runs
+# on two Python versions because AGENTS.md section 5 states 3.11+, and a
+# floor that is never exercised is a floor nobody is holding.
+#
+# The live answer set is deliberately absent. It calls a real provider,
+# costs money and needs a credential, so it stays a manual step run once
+# before delivery (AGENTS.md section 10).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-gates:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Check the resolved dependency tree
+        run: pip check
+
+      - name: Report configuration and ingestion state
+        run: python main.py --check
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      # Each set is its own step so a red run names the gate that failed
+      # rather than the shell that ran four of them. The held-out splits
+      # are NOT gates: the first exits 1 on a known coverage miss, and
+      # the second may be run only once, after thresholds are frozen
+      # (AGENTS.md section 10).
+      - name: Gate — guardrail
+        run: python eval/run_eval.py --set guardrail --strict
+
+      - name: Gate — calibration
+        run: python eval/run_eval.py --set calibration --strict
+
+      - name: Gate — near-domain hard negatives
+        run: python eval/run_eval.py --set near_domain --strict
+
+      - name: Gate — answer contract fixtures
+        run: python eval/run_eval.py --set contracts --strict
+
+      # A CLI answer route needs a credential; this one is the fallback
+      # route, which is fully deterministic and must stay exit 0.
+      - name: Smoke — CLI query
+        run: python main.py "ขั้นตอนการเบิกค่าแท็กซี่หลังทำ OT ต้องทำอย่างไร"
+
+      - name: Smoke — Streamlit starts and serves its health endpoint
+        run: |
+          streamlit run app.py \
+            --server.headless true \
+            --server.port 8599 \
+            --server.fileWatcherType none > /tmp/streamlit.log 2>&1 &
+          curl --retry 30 --retry-delay 1 --retry-connrefused \
+            --fail --silent http://localhost:8599/_stcore/health
+          pkill -f "streamlit run app.py"
+
+      - name: Streamlit log
+        if: always()
+        run: cat /tmp/streamlit.log || true
