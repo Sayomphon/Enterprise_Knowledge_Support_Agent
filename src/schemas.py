@@ -41,6 +41,18 @@ KnowledgeTopic = Literal[
 
 KNOWLEDGE_TOPICS: tuple[KnowledgeTopic, ...] = get_args(KnowledgeTopic)
 
+# Verdict of the expense-eligibility gate. A question about HOW to file a
+# claim and a question about WHETHER an item may be claimed at all read
+# alike and are answered by different documents: the reimbursement policy
+# describes the procedure and names only a few travel items, so anything
+# outside that list has no rule granting it and must be refused rather
+# than answered from the procedure that happens to rank first.
+ExpenseEligibility = Literal[
+    "covered",
+    "uncovered",
+    "not_an_eligibility_question",
+]
+
 # Which of the searched queries a document matched best. Expanded
 # retrieval max-pools over the original query plus its variants, so this
 # records whether a high score came from what the employee actually wrote
@@ -80,6 +92,12 @@ class Document:
         canonical_source_ids: For chat documents, the policy documents
             that carry the authoritative version of the same rule. Empty
             for policy documents.
+        quarantined_line_count: How many lines of the original file were
+            replaced at ingestion because they were shaped like an
+            instruction to the model rather than like evidence. It is
+            reportable provenance, not a score: an operator can see that
+            the quarantine ran and on which document, and a corpus that
+            suddenly starts quarantining is a corpus somebody changed.
     """
 
     source_id: str
@@ -90,6 +108,7 @@ class Document:
     status: DocumentStatus
     topics: tuple[KnowledgeTopic, ...]
     canonical_source_ids: tuple[str, ...] = ()
+    quarantined_line_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -255,10 +274,28 @@ class AnswerClaim(BaseModel):
         source_ids: Ids of the answer-evidence documents that support
             this exact claim. A factual claim with an empty list is a
             contract violation, not an uncited sentence to be tolerated.
+        evidence_quote: Text copied verbatim out of one of the POLICY
+            documents this claim cites. Provenance proves the cited id
+            was really in this request's evidence; it cannot see whether
+            that document says what the claim says. The quote is what
+            makes the second question checkable: the validator looks for
+            it inside the cited policy bodies and refuses the claim when
+            it is not there, so a right-looking citation under a wrong
+            reading no longer passes. It is never shown to the employee
+            -- the renderer emits claim text and validated ids only.
     """
 
+    # Both evidence fields carry a default rather than being required by
+    # the schema, and that is a routing decision, not laxity: a provider
+    # that omits one would otherwise fail to PARSE, which the reporter
+    # boundary degrades to `reporter_failure` -- a service state, telling
+    # the employee to try again about a contract the model broke. With a
+    # default the candidate parses and the validator refuses it by name
+    # (`missing_citation`, `unsupported_claim_span`), which is both the
+    # honest reason code and the one an operator can act on.
     text: str
     source_ids: list[str] = Field(default_factory=list)
+    evidence_quote: str = ""
 
     def normalized_source_ids(self) -> tuple[str, ...]:
         """Return the cited ids stripped, in the model's own order.
@@ -283,6 +320,17 @@ class AnswerClaim(BaseModel):
 # like a policy dump rather than a reply -- and an answer that genuinely
 # needs more is a sign the question should be split.
 MAX_ANSWER_CLAIMS = 6
+
+# Shortest ``evidence_quote`` the answer contract accepts. Like the claim
+# cap above it is a contract with the provider, not a calibrated
+# threshold: no evaluation set decides it. A two-character quote such as
+# "30" occurs in almost any policy body and would satisfy the span rule
+# without proving anything, so the bound exists to make the quote a
+# phrase rather than a token. Twelve characters is roughly three or four
+# Thai words -- the corpus writes its shortest real rule, "lot dai 10
+# wan", in exactly twelve -- and every quote the shipped answers need is
+# far longer.
+MIN_EVIDENCE_QUOTE_CHARS = 12
 
 
 class GroundedAnswer(BaseModel):

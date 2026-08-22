@@ -56,13 +56,21 @@ def _raw_case(**overrides: object) -> dict:
     return case
 
 
+# Body of the stub annual-leave policy. It is a real sentence rather than
+# a placeholder because the answer contract requires every claim to quote
+# a span of the policy it cites, and the harness's stub reporter lifts
+# that span from this body: a one-character body would fail every routing
+# case on a rule these tests are not about.
+LEAVE_POLICY_BODY = "พนักงานประจำมีสิทธิ์ลาพักร้อนได้ 10 วันต่อปี"
+
+
 def _leave_policy(score: float) -> RetrievedDocument:
     """Build the annual-leave policy as a retrieval candidate."""
     return RetrievedDocument(
         source_id="HR-001",
         title="Annual leave policy",
         source_type="policy",
-        content="T",
+        content=LEAVE_POLICY_BODY,
         score=score,
         authority="authoritative",
         status="active",
@@ -79,7 +87,7 @@ def _corpus() -> dict[str, Document]:
             source_id="HR-001",
             title="Annual leave policy",
             source_type="policy",
-            content="T",
+            content=LEAVE_POLICY_BODY,
             authority="authoritative",
             status="active",
             topics=("annual_leave",),
@@ -181,12 +189,17 @@ class TestPromoteRule(unittest.TestCase):
         """Build one citation fixture citing the given ids.
 
         The document body states the figure the claim quotes: the answer
-        contract checks the two against each other, and a placeholder
-        body would reject the valid candidate for the wrong reason.
+        contract checks the claim against the span it quotes, and that
+        span against the body, so a placeholder body would reject the
+        valid candidate for the wrong reason.
         """
         return {
             "claims": [
-                {"text": "ลาพักร้อนได้ 10 วัน", "source_ids": source_ids}
+                {
+                    "text": "ลาพักร้อนได้ 10 วัน",
+                    "source_ids": source_ids,
+                    "evidence_quote": "ลาพักร้อนได้ 10 วันต่อปี",
+                }
             ],
             "insufficient_evidence": False,
             "evidence_ids": ["HR-001"],

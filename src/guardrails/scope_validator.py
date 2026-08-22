@@ -24,13 +24,17 @@ whenever the corpus scope changes.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
+
 from src import config
 from src.guardrails.text_similarity import (
     character_ngrams,
     containment_of_ngrams,
     normalize_for_matching,
+    required_tokens,
 )
-from src.schemas import KnowledgeTopic, ScopeDecision
+from src.schemas import ExpenseEligibility, KnowledgeTopic, ScopeDecision
 
 # Match ``ReasonCode.UNSUPPORTED_TOPIC`` and ``ReasonCode.AMBIGUOUS_TOPIC``;
 # kept as literals so this module stays a pure function over the query text.
@@ -185,24 +189,129 @@ UNSUPPORTED_TOPIC_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
+# The gate below applies to exactly this topic set: the reimbursement
+# process ALONE. That policy is pure procedure -- it says how to file a
+# claim and names only a handful of travel items -- so a question that
+# resolves nothing else has no rule behind whatever item it names.
+#
+# The set is exact rather than a membership test, and the difference is
+# measurable: "on-ngoen phan app laeo cap-na-jo ma boek dai mai" wears
+# the same question shape but resolves the receipt topic too, because it
+# asks which EVIDENCE a claim may use -- and FIN-002 answers that. A
+# membership test refused it (eval/retrieval_calibration.json,
+# cal_noisy_07), which is the over-block this catalog must not buy.
+_ELIGIBILITY_GATED_TOPICS = frozenset({"reimbursement_process"})
+
+# The question shape that asks for a RIGHT rather than for a procedure:
+# "can this be claimed", not "how do I claim". Written as bounded
+# patterns rather than fixed phrases because the expense noun sits inside
+# the shape ("boek kha-kafae dai mai"), and as a declarative table rather
+# than a chain of conditions (AGENTS.md section 6.1). Bounded quantifiers
+# only, as everywhere a pattern meets user input (section 7).
+#
+# The Thai branch requires the question particle: without it "thueng ja
+# boek dai" -- the tail of an ordinary lost-receipt question -- would
+# match, and that question has a policy behind it.
+ELIGIBILITY_INTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?:เบิก|เคลม)[^\n]{0,20}"
+        r"ได้(?:ไหม|มั้ย|ปะ|ป่าว|มัย|รึเปล่า|หรือเปล่า|หรือไม่)"
+    ),
+    re.compile(
+        r"(?:can|could|may)\s{1,3}(?:i|we)\s{1,3}"
+        r"(?:claim|expense|reimburse|get\s{1,3}reimbursed)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:claimable|reimbursable|eligible\s{1,3}for\s{1,3}reimbursement)",
+        re.IGNORECASE,
+    ),
+)
+
+# The expense items FIN-002's section "kha-doen-thang thi boek dai" names
+# as claimable, in the wording employees use for them. This is an
+# allowlist and the gate default-denies around it: the previous approach
+# listed the items that are NOT claimable, which can only ever close the
+# cases somebody thought of. It is configuration bound to this corpus --
+# adding a policy that grants a new item means adding it here, and the
+# README says so.
+COVERED_EXPENSE_ITEMS: dict[str, tuple[str, ...]] = {
+    "taxi_after_ot": ("ค่าแท็กซี่", "แท็กซี่", "taxi", "แกร็บ", "grab"),
+    "parking": ("ค่าที่จอดรถ", "ที่จอดรถ", "parking"),
+    "client_travel": (
+        "ค่าเดินทางไปพบลูกค้า",
+        "เดินทางไปพบลูกค้า",
+        "เดินทางต่างจังหวัด",
+    ),
+}
+
+
+def classify_expense_eligibility(
+    query: str, topics: Sequence[str]
+) -> ExpenseEligibility:
+    """Decide whether a query asks for an expense right the corpus grants.
+
+    Similarity cannot make this distinction and neither can the topic:
+    "how do I file an expense claim" and "can I claim my coffee" resolve
+    to the same topic and score alike, while only the first has a
+    document that answers it. The reimbursement policy lists a handful of
+    travel items and describes a procedure; every other item is outside
+    what any policy granted, so the verdict defaults to refusal.
+
+    Args:
+        query: The guardrail-normalized user query.
+        topics: Supported topics the scope gate resolved for it. The gate
+            applies only when they are exactly the reimbursement process,
+            which is the one policy that grants no item.
+
+    Returns:
+        ``"covered"`` when the question names an item a policy grants,
+        ``"uncovered"`` when it asks for a right no policy states, and
+        ``"not_an_eligibility_question"`` when it asks something else --
+        which is every procedure question and every question that
+        resolved another topic beside or instead of the process.
+    """
+    if set(topics) != _ELIGIBILITY_GATED_TOPICS:
+        return "not_an_eligibility_question"
+    normalized_query = normalize_for_matching(query)
+    if not any(
+        pattern.search(normalized_query)
+        for pattern in ELIGIBILITY_INTENT_PATTERNS
+    ):
+        return "not_an_eligibility_question"
+    covered = any(
+        normalize_for_matching(item) in normalized_query
+        for items in COVERED_EXPENSE_ITEMS.values()
+        for item in items
+    )
+    return "covered" if covered else "uncovered"
+
+
 def _prepared(
     catalog: dict[str, tuple[str, ...]],
-) -> dict[str, tuple[tuple[str, set[str]], ...]]:
+) -> dict[str, tuple[tuple[str, set[str], tuple[str, ...]], ...]]:
     """Fragment every alias once, at import, instead of once per query.
 
-    The catalogs are module constants, so their n-gram sets are constant
-    too; rebuilding them per call was the bulk of this gate's cost, and
-    the gate runs once per query plus once per rewrite candidate.
+    The catalogs are module constants, so their n-gram sets and token
+    requirements are constant too; rebuilding them per call was the bulk
+    of this gate's cost, and the gate runs once per query plus once per
+    rewrite candidate.
 
     Args:
         catalog: Topic to its alias tuple.
 
     Returns:
-        The same mapping with each alias paired with its fragments.
+        The same mapping with each alias paired with its fragments and
+        with the words it must find whole, which is empty for every Thai
+        alias.
     """
     return {
         topic: tuple(
-            (normalized, character_ngrams(normalized))
+            (
+                normalized,
+                character_ngrams(normalized),
+                required_tokens(normalized),
+            )
             for normalized in (
                 normalize_for_matching(alias) for alias in aliases
             )
@@ -219,6 +328,7 @@ def validate_scope(
     query: str,
     match_threshold: float | None = None,
     ambiguous_min_score: float | None = None,
+    topic_margin: float | None = None,
 ) -> ScopeDecision:
     """Decide whether one query falls inside the supported knowledge scope.
 
@@ -243,10 +353,17 @@ def validate_scope(
         ambiguous_min_score: Under-specified floor override used by the
             same callers; defaults to
             ``config.SCOPE_AMBIGUOUS_MIN_SCORE``.
+        topic_margin: Winner-margin override used by the same callers;
+            defaults to ``config.SCOPE_TOPIC_MARGIN``.
 
     Returns:
         The decision. A supported query carries every topic that cleared
-        the threshold, sorted, plus the best alias score behind them. A
+        the threshold AND stayed within ``topic_margin`` of the best one,
+        sorted, plus the best alias score behind them. The margin is what
+        separates a question about two topics from a question whose
+        second topic only shares its words: without it the alias
+        expansion searches a topic nobody asked about and the evidence
+        selector accepts documents from it. A
         refused query carries an empty topic tuple and reason
         ``"ambiguous_topic"`` when it touched at least two topics above
         the under-specified floor without resolving any, else
@@ -264,6 +381,11 @@ def validate_scope(
         ambiguous_min_score
         if ambiguous_min_score is not None
         else config.SCOPE_AMBIGUOUS_MIN_SCORE
+    )
+    margin = (
+        topic_margin
+        if topic_margin is not None
+        else config.SCOPE_TOPIC_MARGIN
     )
     normalized_query = normalize_for_matching(query)
     query_ngrams = character_ngrams(normalized_query)
@@ -297,7 +419,7 @@ def validate_scope(
         sorted(
             topic
             for topic, score in supported_scores.items()
-            if score >= threshold
+            if score >= threshold and score >= best_supported_score - margin
         )
     )
     if not matched_topics:
@@ -330,15 +452,19 @@ def validate_scope(
 def _best_alias_score(
     normalized_query: str,
     query_ngrams: set[str],
-    prepared_aliases: tuple[tuple[str, set[str]], ...],
+    prepared_aliases: tuple[tuple[str, set[str], tuple[str, ...]], ...],
 ) -> float:
     """Score one topic by its best-matching alias inside the query."""
     return max(
         (
             containment_of_ngrams(
-                alias, alias_ngrams, normalized_query, query_ngrams
+                alias,
+                alias_ngrams,
+                normalized_query,
+                query_ngrams,
+                tokens=alias_tokens,
             )
-            for alias, alias_ngrams in prepared_aliases
+            for alias, alias_ngrams, alias_tokens in prepared_aliases
         ),
         default=0.0,
     )

@@ -46,7 +46,10 @@ from src.fallback import ReasonCode
 from src.guardrails.citation_validator import validate_answer
 from src.guardrails.input_guardrail import matched_rule, screen_query
 from src.guardrails.rewrite_validator import validate_rewrites
-from src.guardrails.scope_validator import validate_scope
+from src.guardrails.scope_validator import (
+    classify_expense_eligibility,
+    validate_scope,
+)
 from src.ingestion.loader import load_documents
 from src.logging_utils import log_fallback_event
 from src.query_expansion import alias_expansion_variants, label_alias_matches
@@ -455,6 +458,13 @@ def build_graph(
             return {}
         try:
             decision = validate_scope(state["query"])
+            # Inside the same guard as the gate above, not after it: the
+            # two are one deterministic scope stage, and a crash in
+            # either must leave a reason code rather than escape
+            # ``invoke`` (AGENTS.md section 4, invariant 9).
+            eligibility = classify_expense_eligibility(
+                state["query"], decision.topics
+            )
         except Exception as exc:
             return _degraded(
                 "validate_scope_node", exc, ReasonCode.EVIDENCE_FAILURE
@@ -480,6 +490,17 @@ def build_graph(
             # whose score would otherwise buy them an answer.
             elif state["raw_retrieval_score"] >= config.REWRITE_FLOOR:
                 updates["fallback_reason"] = ReasonCode.UNSUPPORTED_TOPIC.value
+        elif eligibility == "uncovered":
+            # Unlike the verdicts above, this one is deliberately NOT
+            # gated on the band: an eligibility question scores high
+            # precisely because the process policy shares its wording,
+            # so a rule that only fired on low scores would never fire
+            # at all. The reason is written before the router reads it,
+            # which is what keeps a high score from buying an answer the
+            # corpus never granted (AGENTS.md section 4, invariant 4c).
+            updates["fallback_reason"] = (
+                ReasonCode.UNCOVERED_EXPENSE_ITEM.value
+            )
         # Policy coverage is NOT checked here. It used to be, to save the
         # rewrite branch an LLM call when no policy covered the topic --
         # but ``select_evidence`` filters the RETRIEVED CANDIDATES, not

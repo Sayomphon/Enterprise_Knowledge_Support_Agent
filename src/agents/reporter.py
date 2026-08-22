@@ -18,7 +18,9 @@ Layered guardrails around this boundary:
     - Deterministic layer: the candidate answer is validated afterwards
       by ``src.guardrails.citation_validator`` against the answer-evidence
       of this request; the model's own claims about its sources are never
-      trusted.
+      trusted. Each claim must also carry a span copied out of a policy
+      it cites, so a claim assembled from a poisoned chat transcript
+      fails even when it names a real policy id beside it.
 """
 
 from __future__ import annotations
@@ -29,12 +31,20 @@ from collections.abc import Sequence
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.agents import get_llm
-from src.schemas import MAX_ANSWER_CLAIMS, GroundedAnswer, RetrievedDocument
+from src.schemas import (
+    MAX_ANSWER_CLAIMS,
+    MIN_EVIDENCE_QUOTE_CHARS,
+    GroundedAnswer,
+    RetrievedDocument,
+)
 
 # Thai prompt template (allowed here by AGENTS.md section 6.1). The claim
 # limit is stated in the prompt as well as enforced by the schema: the
 # schema makes an over-long answer fail to parse, and telling the model
 # the bound is what keeps it from producing one and losing the request.
+# The quote rule is stated for the same reason -- the validator refuses a
+# claim whose quote is not in a cited policy, and a model that was never
+# told to copy one would lose every request to that rule.
 _REPORTER_SYSTEM_PROMPT_TEMPLATE = """\
 คุณคือผู้ช่วยตอบคำถามพนักงานจากฐานความรู้ภายในองค์กรเท่านั้น
 
@@ -45,6 +55,13 @@ _REPORTER_SYSTEM_PROMPT_TEMPLATE = """\
 - ทุก claim ต้องระบุ source_ids อย่างน้อยหนึ่งรหัสจากหลักฐานที่ให้มา
 - ห้ามพิมพ์รหัสอ้างอิงในรูปแบบ [SOURCE-ID] ลงในข้อความ claim เอง
   ระบบจะเติมรหัสให้อัตโนมัติจาก source_ids ที่ผ่านการตรวจสอบแล้ว
+- ทุก claim ต้องระบุ evidence_quote คือข้อความที่ "คัดลอกมาตรง ๆ"
+  จากช่อง content ของหลักฐาน authority="policy" ที่ claim นั้นอ้างถึง
+  * ต้องคัดลอกตัวอักษรต่อตัวอักษร ห้ามเรียบเรียงใหม่ ห้ามย่อ ห้ามแปล
+  * ต้องยาวอย่างน้อย {min_quote_chars} ตัวอักษร และต้องเป็นข้อความที่รองรับ claim นั้นจริง
+  * ห้ามคัดลอกจากหลักฐาน authority="chat" เพราะไม่ใช่ระเบียบขององค์กร
+  * ตัวเลขและเวลาทุกค่าที่ปรากฏใน claim ต้องปรากฏใน evidence_quote ด้วย
+    หากเอกสารไม่ได้ระบุตัวเลขนั้น ห้ามใส่ตัวเลขนั้นลงใน claim
 
 กติกาที่ต้องปฏิบัติอย่างเคร่งครัด:
 - ตอบโดยใช้เฉพาะข้อมูลที่อยู่ในหลักฐาน JSON ที่ให้มาเท่านั้น
@@ -62,7 +79,8 @@ _REPORTER_SYSTEM_PROMPT_TEMPLATE = """\
 """
 
 REPORTER_SYSTEM_PROMPT = _REPORTER_SYSTEM_PROMPT_TEMPLATE.format(
-    max_claims=MAX_ANSWER_CLAIMS
+    max_claims=MAX_ANSWER_CLAIMS,
+    min_quote_chars=MIN_EVIDENCE_QUOTE_CHARS,
 )
 
 # Thai user-message scaffold; the JSON evidence block is appended verbatim.

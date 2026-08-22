@@ -362,14 +362,43 @@ def _stub_reporter(
     Returns:
         A candidate answer citing the authoritative evidence.
     """
-    policy_ids = [
-        document.source_id
+    policies = [
+        document
         for document in retrieved
         if document.authority == "authoritative"
     ]
     return GroundedAnswer(
-        claims=[AnswerClaim(text=EVAL_CLAIM_TEXT, source_ids=policy_ids)]
+        claims=[
+            AnswerClaim(
+                text=EVAL_CLAIM_TEXT,
+                source_ids=[document.source_id for document in policies],
+                # Lifted from the first cited policy rather than written
+                # here: the answer contract now requires a span that
+                # really occurs in a document the claim cites, so a
+                # hand-written placeholder would make every routing case
+                # fall back on a rule this harness is not measuring.
+                evidence_quote=_first_policy_span(policies),
+            )
+        ]
     )
+
+
+def _first_policy_span(policies: Sequence[RetrievedDocument]) -> str:
+    """Return a verbatim span of the first policy offered as evidence.
+
+    Args:
+        policies: The authoritative documents of one request, in the
+            order the evidence selector produced.
+
+    Returns:
+        The document's longest opening line, which is always long enough
+        to satisfy the contract's minimum, or ``""`` when there is no
+        policy -- a state the graph never reaches the reporter in.
+    """
+    if not policies:
+        return ""
+    lines = [line.strip() for line in policies[0].content.splitlines()]
+    return max(lines, key=len, default="")
 
 
 def build_eval_graph(
@@ -1219,6 +1248,7 @@ def _candidate_answer(case: dict) -> GroundedAnswer:
             AnswerClaim(
                 text=str(claim["text"]),
                 source_ids=list(claim["source_ids"]),
+                evidence_quote=str(claim.get("evidence_quote", "")),
             )
             for claim in case["claims"]
         ],

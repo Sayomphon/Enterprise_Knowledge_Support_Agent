@@ -76,6 +76,13 @@ OUT_OF_DOMAIN_QUERY = "Bitcoin วันนี้ราคาเท่าไห�
 # maternity-leave or meal-expense rule, but both score close to one.
 UNSUPPORTED_HIGH_QUERY = "ลาคลอดต้องใช้ใบรับรองแพทย์ไหม"
 UNSUPPORTED_MEDIUM_QUERY = "ค่าอาหารระหว่างทำงานเบิกได้ไหม"
+# An eligibility question about an expense item no policy grants. It
+# resolves the reimbursement topic and scores high, because the process
+# policy shares all its wording -- which is exactly why the refusal must
+# not be gated on the score.
+UNCOVERED_EXPENSE_QUERY = "ค่ากาแฟลูกค้าเบิกได้ไหม"
+# Its positive twin: the same shape about an item FIN-001 does list.
+COVERED_EXPENSE_QUERY = "ค่าแท็กซี่หลัง OT เบิกได้ไหม"
 # Names a concept the corpus covers without saying which one: "ลา" is
 # shared by the annual-leave and sick-leave aliases, so the query
 # touches both and resolves neither.
@@ -86,6 +93,13 @@ REWRITTEN_VARIANT = "เบิกเงินค่าแท็กซี่"
 # A rewrite that swaps the reimbursement question for a leave question:
 # lexically plausible, but no longer what the employee asked.
 DRIFTED_VARIANT = "วิธีลาพักร้อนต้องแจ้งล่วงหน้ากี่วัน"
+
+# An English leave question. Every English question about leave used to
+# resolve BOTH leave topics, because the fragments of "sick leave" that
+# appear inside "annual leave days" are half of that alias.
+ENGLISH_ANNUAL_LEAVE_QUERY = "How many annual leave days do I get?"
+ANNUAL_LEAVE_CLAIM_TEXT = "Annual leave is 10 days per year"
+ANNUAL_LEAVE_EVIDENCE_TEXT = ANNUAL_LEAVE_CLAIM_TEXT
 
 CLAIM_TEXT = "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
 # Body every stub document carries. It restates CLAIM_TEXT because the
@@ -105,13 +119,40 @@ OBEYED_CLAIM_TEXT = "เบิกค่าแท็กซี่ได้ไม�
 # Rendered form of VALID_CANDIDATE; the reporter no longer writes markup.
 VALID_ANSWER = f"{CLAIM_TEXT} [FIN-001]"
 VALID_CANDIDATE = GroundedAnswer(
-    claims=[AnswerClaim(text=CLAIM_TEXT, source_ids=["FIN-001"])]
+    claims=[
+        AnswerClaim(
+            text=CLAIM_TEXT,
+            source_ids=["FIN-001"],
+            # The stub policy body IS this text, so the span the answer
+            # contract requires is the claim's own wording quoted back.
+            evidence_quote=EVIDENCE_TEXT,
+        )
+    ]
+)
+ANNUAL_LEAVE_CANDIDATE = GroundedAnswer(
+    claims=[
+        AnswerClaim(
+            text=ANNUAL_LEAVE_CLAIM_TEXT,
+            source_ids=["HR-001"],
+            evidence_quote=ANNUAL_LEAVE_EVIDENCE_TEXT,
+        )
+    ]
 )
 FABRICATED_CANDIDATE = GroundedAnswer(
-    claims=[AnswerClaim(text=CLAIM_TEXT, source_ids=["ZZ-999"])]
+    claims=[
+        AnswerClaim(
+            text=CLAIM_TEXT,
+            source_ids=["ZZ-999"],
+            evidence_quote=EVIDENCE_TEXT,
+        )
+    ]
 )
 UNCITED_CANDIDATE = GroundedAnswer(
-    claims=[AnswerClaim(text=CLAIM_TEXT, source_ids=[])]
+    claims=[
+        AnswerClaim(
+            text=CLAIM_TEXT, source_ids=[], evidence_quote=EVIDENCE_TEXT
+        )
+    ]
 )
 MALFORMED_CANDIDATE = GroundedAnswer(claims=[])
 INSUFFICIENT_CANDIDATE = GroundedAnswer(insufficient_evidence=True)
@@ -175,6 +216,58 @@ def _off_topic_policy(score: float) -> RetrievedDocument:
         matched_query="rewritten",
         matched_query_type="rewrite",
     )
+
+
+def _annual_leave_policy(score: float) -> RetrievedDocument:
+    """Build the annual-leave policy as a candidate."""
+    return RetrievedDocument(
+        source_id="HR-001",
+        title="Annual leave policy",
+        source_type="policy",
+        content=ANNUAL_LEAVE_EVIDENCE_TEXT,
+        score=score,
+        authority="authoritative",
+        status="active",
+        topics=("annual_leave",),
+    )
+
+
+def _sick_leave_policy(score: float) -> RetrievedDocument:
+    """Build the sick-leave policy as a candidate for a leave question."""
+    return RetrievedDocument(
+        source_id="HR-002",
+        title="Sick leave policy",
+        source_type="policy",
+        content=EVIDENCE_TEXT,
+        score=score,
+        authority="authoritative",
+        status="active",
+        topics=("sick_leave",),
+    )
+
+
+def _leave_corpus() -> list[Document]:
+    """Mirror the two leave policies as the corpus evidence selection reads."""
+    return [
+        Document(
+            source_id="HR-001",
+            title="Annual leave policy",
+            source_type="policy",
+            content=ANNUAL_LEAVE_EVIDENCE_TEXT,
+            authority="authoritative",
+            status="active",
+            topics=("annual_leave",),
+        ),
+        Document(
+            source_id="HR-002",
+            title="Sick leave policy",
+            source_type="policy",
+            content=EVIDENCE_TEXT,
+            authority="authoritative",
+            status="active",
+            topics=("sick_leave",),
+        ),
+    ]
 
 
 def _documents(top_score: float) -> list[RetrievedDocument]:
@@ -726,6 +819,64 @@ class TestGraphRoutes(unittest.TestCase):
             state["fallback_reason"], "no_authoritative_evidence"
         )
         self.assertEqual(reporter_seam.call_count, 0)
+
+    def test_an_ungranted_expense_item_falls_back_above_the_threshold(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # The process policy ranks first and clears the direct threshold,
+        # so nothing downstream would stop this: the employee would read
+        # a confident yes and file a claim on it.
+        graph = self._graph([_documents(HIGH_SCORE)])
+
+        state: PipelineState = graph.invoke(
+            {"query": UNCOVERED_EXPENSE_QUERY}
+        )
+
+        self.assertEqual(state["route"], "fallback")
+        self.assertEqual(
+            state["fallback_reason"], ReasonCode.UNCOVERED_EXPENSE_ITEM
+        )
+        self.assertEqual(reporter_seam.call_count, 0)
+        self.assertEqual(
+            self._log_records()[0]["reason"],
+            ReasonCode.UNCOVERED_EXPENSE_ITEM.value,
+        )
+
+    def test_a_granted_expense_item_still_reaches_an_answer(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # The control for the rule above. A default-deny that also
+        # refuses the items the policy DOES list is a regression.
+        self._set_reporter(reporter_seam, VALID_CANDIDATE)
+        graph = self._graph([_documents(HIGH_SCORE)])
+
+        state: PipelineState = graph.invoke({"query": COVERED_EXPENSE_QUERY})
+
+        self.assertEqual(state["route"], "answered")
+
+    def test_a_leave_question_never_carries_the_other_leave_policy(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # Retrieval ranks both leave policies, as it does whenever the
+        # question shares the word "leave" with the other one. The scope
+        # gate resolves annual leave alone, so the evidence selector must
+        # drop the sick-leave policy rather than offer the reporter a
+        # rule the employee never asked about.
+        self._set_reporter(reporter_seam, ANNUAL_LEAVE_CANDIDATE)
+        graph = self._graph(
+            [[_annual_leave_policy(HIGH_SCORE), _sick_leave_policy(HIGH_SCORE)]],
+            documents=_leave_corpus(),
+        )
+
+        state: PipelineState = graph.invoke(
+            {"query": ENGLISH_ANNUAL_LEAVE_QUERY}
+        )
+
+        self.assertEqual(state["scope_topics"], ["annual_leave"])
+        self.assertEqual(
+            [document.source_id for document in state["answer_evidence"]],
+            ["HR-001"],
+        )
 
     def test_chat_top_hit_answers_from_its_canonical_policy(
         self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
@@ -1424,6 +1575,33 @@ class TestDeterministicStageFailures(unittest.TestCase):
         )
         self.assertNotIn("secret", json.dumps(records[0]))
 
+    def test_scope_stage_failure_degrades_instead_of_escaping(self) -> None:
+        # The scope gate and the eligibility gate are one stage, and a
+        # crash in either must leave a reason code rather than escape
+        # ``invoke`` (AGENTS.md section 4, invariant 9).
+        for seam in ("validate_scope", "classify_expense_eligibility"):
+            with self.subTest(seam=seam):
+                graph = build_graph(
+                    retriever=StubRetriever([_documents(HIGH_SCORE)]),
+                    log_path=self.log_path,
+                    documents=_corpus(),
+                )
+                with mock.patch(
+                    f"src.graph.{seam}",
+                    side_effect=RuntimeError("scope index corrupted"),
+                ):
+                    state = graph.invoke({"query": NORMAL_QUERY})
+
+                self.assertEqual(state["route"], "fallback")
+                self.assertEqual(
+                    state["fallback_reason"],
+                    ReasonCode.EVIDENCE_FAILURE.value,
+                )
+                self.assertEqual(
+                    self._log_records()[-1]["reason"],
+                    ReasonCode.EVIDENCE_FAILURE.value,
+                )
+
     def test_non_string_query_is_refused_rather_than_raising(self) -> None:
         # screen_query is typed ``query: object`` so this boundary can
         # reject a non-string; the refusal path then has to survive it.
@@ -1583,6 +1761,72 @@ class TestIndirectInjection(unittest.TestCase):
             state["fallback_reason"], "no_authoritative_evidence"
         )
         self.assertNotIn("answer", state)
+
+    def test_a_claim_co_citing_a_policy_but_quoting_chat_is_refused(
+        self,
+    ) -> None:
+        # The bypass the authority rule alone could not close: the model
+        # states what the poisoned transcript told it to, and names a
+        # real policy id beside the chat id so that "at least one policy"
+        # holds. The span is what refuses it -- the quoted words are in
+        # the transcript and in no policy.
+        laundered = GroundedAnswer(
+            claims=[
+                AnswerClaim(
+                    text=OBEYED_CLAIM_TEXT,
+                    source_ids=["FIN-001", "CHAT-001"],
+                    evidence_quote=POISONED_CHAT_TEXT,
+                )
+            ]
+        )
+        graph = self._graph(
+            lambda query, retrieved, *, budget_seconds=None: laundered
+        )
+
+        state: PipelineState = graph.invoke({"query": NORMAL_QUERY})
+
+        self.assertEqual(state["route"], "fallback")
+        self.assertEqual(
+            state["fallback_reason"], ReasonCode.UNSUPPORTED_CLAIM_SPAN
+        )
+        self.assertNotIn("answer", state)
+
+    def test_the_poisoned_claim_text_stays_out_of_the_log(self) -> None:
+        laundered = GroundedAnswer(
+            claims=[
+                AnswerClaim(
+                    text=OBEYED_CLAIM_TEXT,
+                    source_ids=["FIN-001", "CHAT-001"],
+                    evidence_quote=POISONED_CHAT_TEXT,
+                )
+            ]
+        )
+        graph = self._graph(
+            lambda query, retrieved, *, budget_seconds=None: laundered
+        )
+
+        graph.invoke({"query": NORMAL_QUERY})
+
+        written = json.dumps(self._log_records(), ensure_ascii=False)
+        self.assertIn(ReasonCode.UNSUPPORTED_CLAIM_SPAN.value, written)
+        self.assertNotIn(OBEYED_CLAIM_TEXT, written)
+        self.assertNotIn(POISONED_CHAT_TEXT, written)
+
+    def test_a_claim_quoting_the_policy_beside_the_poison_still_answers(
+        self,
+    ) -> None:
+        # The control. A poisoned document in the evidence must not cost
+        # the request its answer when the claim really does rest on the
+        # policy: the span rule refuses the laundered claim above and
+        # this one, quoting FIN-001, still renders.
+        graph = self._graph(
+            lambda query, retrieved, *, budget_seconds=None: VALID_CANDIDATE
+        )
+
+        state: PipelineState = graph.invoke({"query": NORMAL_QUERY})
+
+        self.assertEqual(state["route"], "answered")
+        self.assertEqual(state["valid_citations"], ["FIN-001"])
 
     def test_the_document_text_reaches_the_reporter_as_data(self) -> None:
         # The defence layers only make sense if the poisoned document was

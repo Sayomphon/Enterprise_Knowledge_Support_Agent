@@ -8,7 +8,10 @@ reports which query actually earned a document's score.
 
 import unittest
 
-from src.guardrails.scope_validator import SUPPORTED_TOPIC_ALIASES
+from src.guardrails.scope_validator import (
+    SUPPORTED_TOPIC_ALIASES,
+    validate_scope,
+)
 from src.query_expansion import (
     _ALIASES_PER_TOPIC,
     alias_expansion_variants,
@@ -17,6 +20,12 @@ from src.query_expansion import (
 from src.schemas import RetrievedDocument
 
 WFH_QUERY = "ขอ wfh อาทิตย์นึงได้กี่วันอะ"
+ENGLISH_ANNUAL_LEAVE_QUERY = "How many annual leave days do I get?"
+# Sick-leave vocabulary, in both languages. The expansion searches the
+# aliases of whatever the scope gate resolved, so a contaminated topic
+# set puts these words into an annual-leave search and lifts the wrong
+# policy up the ranking.
+SICK_LEAVE_WORDS = ("sick leave", "ลาป่วย", "ใบรับรองแพทย์")
 
 
 def _document(matched_query: str) -> RetrievedDocument:
@@ -56,6 +65,18 @@ class TestAliasExpansionVariants(unittest.TestCase):
         self.assertEqual(len(variants), 2)
         self.assertTrue(variants[0].startswith(WFH_QUERY))
         self.assertEqual(variants[1], variants[0][len(WFH_QUERY) + 1 :])
+
+    def test_a_leave_question_never_searches_the_other_leave_type(
+        self,
+    ) -> None:
+        variants = alias_expansion_variants(
+            ENGLISH_ANNUAL_LEAVE_QUERY,
+            validate_scope(ENGLISH_ANNUAL_LEAVE_QUERY).topics,
+        )
+
+        for word in SICK_LEAVE_WORDS:
+            with self.subTest(word=word):
+                self.assertNotIn(word, " ".join(variants))
 
     def test_the_best_matching_aliases_come_first(self) -> None:
         # "wfh" appears verbatim in the query, so it must lead: the point

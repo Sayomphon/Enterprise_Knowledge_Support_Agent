@@ -15,17 +15,20 @@ from src.fallback import (
     SERVICE_UNAVAILABLE_TEXT,
     SERVICE_UNAVAILABLE_TEXT_UNLOGGED,
     SUPPORTED_TOPIC_HINTS,
+    UNCOVERED_EXPENSE_TEXT,
+    UNCOVERED_EXPENSE_TEXT_UNLOGGED,
     ReasonCode,
     ReasonFamily,
     _REASON_FAMILIES,
     is_ambiguous_topic,
     is_service_failure,
+    is_uncovered_expense_item,
     reason_family,
     refusal_text_for,
     response_text_for_state,
 )
 from src.guardrails.input_guardrail import GuardrailReason
-from src.schemas import KNOWLEDGE_TOPICS
+from src.schemas import KNOWLEDGE_TOPICS, ExpenseEligibility
 
 # The sentence the degraded texts may print only when the append to the
 # JSONL sink actually succeeded.
@@ -168,6 +171,10 @@ class TestServiceUnavailableMapping(unittest.TestCase):
     #: statement that the corpus lacks the answer.
     AMBIGUOUS_REASONS = (ReasonCode.AMBIGUOUS_TOPIC,)
 
+    #: The expense right no policy grants, which reads as a corpus gap
+    #: but sends the employee to Finance rather than back to rewording.
+    UNCOVERED_EXPENSE_REASONS = (ReasonCode.UNCOVERED_EXPENSE_ITEM,)
+
     #: Reasons naming a verdict the pipeline actually reached.
     EVIDENCE_REASONS = (
         ReasonCode.LOW_RETRIEVAL_SCORE,
@@ -179,6 +186,7 @@ class TestServiceUnavailableMapping(unittest.TestCase):
         ReasonCode.INVALID_ANSWER_STRUCTURE,
         ReasonCode.INSUFFICIENT_REPORTER_EVIDENCE,
         ReasonCode.UNSUPPORTED_NUMERIC_CLAIM,
+        ReasonCode.UNSUPPORTED_CLAIM_SPAN,
         ReasonCode.REWRITE_REJECTED,
     )
 
@@ -265,6 +273,7 @@ class TestServiceUnavailableMapping(unittest.TestCase):
             set(self.SERVICE_REASONS)
             | set(self.EVIDENCE_REASONS)
             | set(self.AMBIGUOUS_REASONS)
+            | set(self.UNCOVERED_EXPENSE_REASONS)
             | set(self.BLOCKED_REASONS)
         )
 
@@ -398,6 +407,14 @@ class TestReasonCodeLiterals(unittest.TestCase):
     is that binding.
     """
 
+    #: Strings these modules return that are typed verdicts rather than
+    #: reason codes. The exemption is a type rather than a hand-kept
+    #: list: both are members of a ``Literal`` in ``schemas``, so a new
+    #: string that belongs to neither still fails this test.
+    NON_REASON_LITERALS = frozenset(
+        get_args(ExpenseEligibility) + KNOWLEDGE_TOPICS
+    )
+
     #: Modules that return reason codes without importing the enum.
     LITERAL_SOURCES = (
         "src/guardrails/citation_validator.py",
@@ -441,7 +458,9 @@ class TestReasonCodeLiterals(unittest.TestCase):
     def test_every_returned_reason_literal_is_a_reason_code(self) -> None:
         known = {code.value for code in ReasonCode}
         for relative in self.LITERAL_SOURCES:
-            literals = self._reason_literals(relative)
+            literals = (
+                self._reason_literals(relative) - self.NON_REASON_LITERALS
+            )
             self.assertTrue(literals, f"{relative} returned no literal")
             for literal in literals:
                 with self.subTest(module=relative, literal=literal):

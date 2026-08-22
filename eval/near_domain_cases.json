@@ -98,45 +98,119 @@
     "expected_sources": []
   },
   {
+    "id": "nd_coffee_01",
+    "category": "unsupported",
+    "query": "ค่ากาแฟลูกค้าเบิกได้ไหม",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_coffee_02",
+    "category": "unsupported",
+    "query": "ค่าของขวัญลูกค้าเบิกได้ไหม",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_fitness_01",
+    "category": "unsupported",
+    "query": "ค่าสมาชิกฟิตเนสเบิกได้ไหม",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_fitness_02",
+    "category": "unsupported",
+    "query": "ค่าสมาชิกยิมเบิกได้มั้ย",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_childcare_01",
+    "category": "unsupported",
+    "query": "ค่าเลี้ยงดูบุตรเบิกได้ไหม",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "nd_childcare_02",
+    "category": "unsupported",
+    "query": "ค่าเลี้ยงดูบุตรเบิกได้ปะ",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
     "id": "nd_benign_01",
     "category": "normal",
     "query": "เบิกค่าแท็กซี่หลังทำ OT ต้องแนบเอกสารอะไรบ้าง",
     "expected_route": "answered",
-    "expected_sources": ["FIN-001"]
+    "expected_sources": [
+      "FIN-001"
+    ]
   },
   {
     "id": "nd_benign_02",
     "category": "normal",
     "query": "ค่าที่จอดรถตอนออกไปพบลูกค้าเบิกได้ไหม",
     "expected_route": "answered",
-    "expected_sources": ["FIN-001", "CHAT-003"]
+    "expected_sources": [
+      "FIN-001",
+      "CHAT-003"
+    ]
   },
   {
     "id": "nd_benign_03",
     "category": "normal",
     "query": "ค่าเดินทางไปพบลูกค้าต่างจังหวัดต้องขออนุมัติล่วงหน้าหรือไม่",
     "expected_route": "answered",
-    "expected_sources": ["FIN-001"]
+    "expected_sources": [
+      "FIN-001"
+    ]
   },
   {
     "id": "nd_benign_04",
     "category": "noisy",
     "query": "ขอ wfh อาทิตย์นึงได้กี่วันอะ",
     "expected_route": "answered",
-    "expected_sources": ["HR-003"]
+    "expected_sources": [
+      "HR-003"
+    ]
   },
   {
     "id": "nd_benign_05",
     "category": "normal",
     "query": "ใบเสร็จหายต้องทำอย่างไรถึงจะเบิกได้",
     "expected_route": "answered",
-    "expected_sources": ["FIN-002", "CHAT-003"]
+    "expected_sources": [
+      "FIN-002",
+      "CHAT-003"
+    ]
   },
   {
     "id": "nd_benign_06",
     "category": "normal",
     "query": "ลาป่วยติดต่อกันกี่วันต้องแนบใบรับรองแพทย์",
     "expected_route": "answered",
-    "expected_sources": ["HR-002"]
+    "expected_sources": [
+      "HR-002"
+    ]
+  },
+  {
+    "id": "nd_benign_07",
+    "category": "normal",
+    "query": "เบิกค่าเดินทางไปพบลูกค้าได้ไหม",
+    "expected_route": "answered",
+    "expected_sources": [
+      "FIN-001"
+    ]
+  },
+  {
+    "id": "nd_benign_08",
+    "category": "normal",
+    "query": "ค่าเดินทางไปพบลูกค้าต่างจังหวัดเบิกได้ไหม",
+    "expected_route": "answered",
+    "expected_sources": [
+      "FIN-001"
+    ]
   }
 ]

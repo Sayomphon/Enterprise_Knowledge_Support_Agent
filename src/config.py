@@ -192,6 +192,31 @@ FINAL_ANSWER_THRESHOLD: float = _env_float("FINAL_ANSWER_THRESHOLD", "0.21")
 # into a supported topic at this threshold.
 SCOPE_MATCH_THRESHOLD: float = _env_float("SCOPE_MATCH_THRESHOLD", "0.40")
 
+# How far below the winning topic a second topic may sit and still be
+# resolved, calibrated 2026-08-22 on the 25-case calibration set, the
+# 20-case near-domain set and 16 additional bilingual probe queries that
+# were NOT added to any fixture. It answers what the match threshold
+# cannot: an alias catalog scores every topic independently, so a topic
+# that clears the threshold on words it merely SHARES with the winner is
+# admitted beside it, and the evidence selector then accepts documents
+# from both.
+#
+# The separating quantity is the gap to the best topic. Among the queries
+# that resolve two topics after the token gate, every legitimately
+# two-topic question sits at a gap of 0.0000 (both aliases verbatim, as
+# in "yuen-boek kha-taxi chai bai-set arai") or 0.1111 (cal_noisy_07,
+# whose expected source is filed under the narrower topic), while every
+# coincidental second topic sits at 0.5000 or 0.5714 -- "tham-ngan-chak-
+# ban boek kha arai dai bang" brushing the reimbursement process, or
+# "slip-on-ngoen chai thaen bai-set" brushing it through the word
+# "boek". 0.30 is the midpoint of that 0.1111-0.5000 gap, rounded.
+#
+# It is a margin, not a cap on how many topics may resolve: CHAT-001 and
+# CHAT-003 genuinely cover two topics each, and forcing a single one
+# would refuse the cross-topic questions those documents exist to answer.
+# Held-out data was not consulted for this number.
+SCOPE_TOPIC_MARGIN: float = _env_float("SCOPE_TOPIC_MARGIN", "0.30")
+
 # Floor under the "under-specified" verdict, calibrated 2026-08-22 on the
 # 25-case calibration set, the 20-case near-domain set, and 23 additional
 # probe queries (out-of-domain and under-specified) that were NOT added
@@ -296,6 +321,7 @@ _require_unit_interval("SCOPE_MATCH_THRESHOLD", SCOPE_MATCH_THRESHOLD)
 _require_unit_interval(
     "SCOPE_AMBIGUOUS_MIN_SCORE", SCOPE_AMBIGUOUS_MIN_SCORE
 )
+_require_unit_interval("SCOPE_TOPIC_MARGIN", SCOPE_TOPIC_MARGIN)
 _require_unit_interval(
     "REWRITE_CONTINUITY_THRESHOLD", REWRITE_CONTINUITY_THRESHOLD
 )

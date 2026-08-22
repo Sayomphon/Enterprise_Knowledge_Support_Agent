@@ -15,9 +15,56 @@ from src.query_expansion import alias_expansion_variants
 from src.guardrails.scope_validator import (
     SUPPORTED_TOPIC_ALIASES,
     UNSUPPORTED_TOPIC_ALIASES,
+    classify_expense_eligibility,
     validate_scope,
 )
 from src.schemas import KNOWLEDGE_TOPICS
+
+# (label, query) for questions that ask whether an expense item may be
+# claimed at all. The reimbursement policy describes how to file a claim
+# and never says which items qualify, so an answer drawn from it would
+# grant a right the corpus never granted -- and the employee would file
+# on it.
+UNCOVERED_ELIGIBILITY_QUERIES = (
+    ("coffee", "ค่ากาแฟลูกค้าเบิกได้ไหม"),
+    ("fitness", "ค่าสมาชิกฟิตเนสเบิกได้ไหม"),
+    ("glasses", "ค่าตัดแว่นเบิกได้ไหม"),
+    ("laundry", "ค่าซักรีดชุดทำงานเบิกได้ไหม"),
+    ("client_gift", "ค่าของขวัญลูกค้าเบิกได้ไหม"),
+    # Parking is claimable only while visiting a client, so the mall
+    # variant must not inherit the covered item's answer.
+    ("mall_parking", "ค่าจอดรถห้างเบิกได้ไหม"),
+)
+
+# Eligibility questions the scope gate refuses before this classifier is
+# ever consulted. They belong in the same file because the property that
+# matters is the outcome -- no employee is told an uncovered item is
+# claimable -- and which of the two layers stopped it is an
+# implementation detail that may legitimately move.
+SCOPE_REFUSED_ELIGIBILITY_QUERIES = (
+    ("childcare", "ค่าเลี้ยงดูบุตรเบิกได้ไหม"),
+    ("coffee_leading_verb", "เบิกค่ากาแฟได้ไหม"),
+    ("english_coffee", "Can I claim my coffee with a client?"),
+)
+
+# The paired positives: the same question shape about the items FIN-001
+# does list under "kha-doen-thang thi boek dai". Refusing these would be
+# a regression, not a fix.
+COVERED_ELIGIBILITY_QUERIES = (
+    ("taxi_after_ot", "ค่าแท็กซี่หลัง OT เบิกได้ไหม"),
+    ("parking", "ค่าที่จอดรถเบิกได้ไหม"),
+    ("taxi_slang", "เบิกตังค่า taxi ได้ปะ"),
+)
+
+# Questions that ask about the PROCEDURE, or about the receipt rule, in
+# wording close enough to trip a rule written only on the question
+# particle. None of them asks for a right, so none may be refused.
+PROCEDURE_QUERIES = (
+    ("how_to_claim", "ขั้นตอนการเบิกค่าใช้จ่ายทำอย่างไร"),
+    ("lost_receipt_slang", "ใบเสดหาย เคลมได้มั้ย"),
+    ("lost_receipt", "ใบเสร็จหายต้องทำอย่างไรถึงจะเบิกได้"),
+    ("leave_question", "ลาพักร้อนได้กี่วัน"),
+)
 
 # (label, query, topic that must be resolved) for supported wording.
 SUPPORTED_QUERIES = (
@@ -119,13 +166,76 @@ class TestSupportedTopics(unittest.TestCase):
     """Wording employees really use must resolve to the right topic."""
 
     def test_supported_queries_resolve_their_topic(self) -> None:
+        # Exact rather than membership: a question about one topic that
+        # also resolves its neighbour is not a passing case, and asserting
+        # membership is what let every English leave question resolve
+        # both leave topics for as long as it did.
         for label, query, expected_topic in SUPPORTED_QUERIES:
             with self.subTest(case=label):
                 decision = validate_scope(query)
 
                 self.assertTrue(decision.supported)
-                self.assertIn(expected_topic, decision.topics)
+                self.assertEqual(decision.topics, (expected_topic,))
                 self.assertIsNone(decision.reason)
+
+    def test_english_leave_questions_resolve_one_leave_type(self) -> None:
+        # "sick leave" shares the word "leave" with an annual-leave
+        # question, and its character fragments alone carried half the
+        # alias. A shared word is not a topic the employee asked about.
+        for query, expected_topic in (
+            ("How many annual leave days do I get?", "annual_leave"),
+            ("sick leave policy", "sick_leave"),
+            ("Can I carry over unused annual leave?", "annual_leave"),
+        ):
+            with self.subTest(query=query):
+                decision = validate_scope(query)
+
+                self.assertEqual(decision.topics, (expected_topic,))
+
+    def test_an_english_question_naming_no_leave_type_resolves_nothing(
+        self,
+    ) -> None:
+        # What the winner margin alone cannot do. "leave policy" names no
+        # type, and the fragments of "sick leave" that occur inside it
+        # score that topic 1.0 -- the highest score, so no margin can
+        # separate it. Requiring the alias to contribute its own word
+        # "sick" is what refuses the question instead of answering it
+        # from whichever leave policy happened to win.
+        for query in (
+            "leave policy",
+            "How do I request leave?",
+            "how many leave days",
+        ):
+            with self.subTest(query=query):
+                decision = validate_scope(query)
+
+                self.assertFalse(decision.supported)
+                self.assertEqual(decision.topics, ())
+
+    def test_a_named_leave_type_still_resolves(self) -> None:
+        # The control for the rule above: refusing every English leave
+        # question would be an over-block, not a fix.
+        self.assertEqual(
+            validate_scope("annual leave policy").topics, ("annual_leave",)
+        )
+
+    def test_a_genuinely_two_topic_question_keeps_both(self) -> None:
+        # The control for the rule above. CHAT-001 covers the claim
+        # process and the receipt rule together, so narrowing every
+        # question to one topic would refuse what that document answers.
+        decision = validate_scope("เบิกค่าแท็กซี่ต้องแนบใบเสร็จไหม")
+
+        self.assertEqual(
+            decision.topics, ("receipt_policy", "reimbursement_process")
+        )
+
+    def test_a_topic_far_behind_the_winner_is_dropped(self) -> None:
+        # "tham-ngan-chak-ban boek kha arai dai bang" brushes the
+        # reimbursement process through one shared word while naming the
+        # WFH policy outright; only the topic it named survives.
+        decision = validate_scope("ทำงานจากที่บ้านเบิกค่าอะไรได้บ้าง")
+
+        self.assertEqual(decision.topics, ("work_from_home",))
 
     def test_supported_decision_reports_its_alias_score(self) -> None:
         decision = validate_scope("ลาป่วยต้องแจ้งหัวหน้าภายในกี่โมง")
@@ -350,3 +460,80 @@ class TestCatalogContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestExpenseEligibility(unittest.TestCase):
+    """An expense right must come from a rule, never from a procedure."""
+
+    @staticmethod
+    def _classify(query: str) -> str:
+        """Classify one query under the topics the scope gate resolved."""
+        return classify_expense_eligibility(
+            query, validate_scope(query).topics
+        )
+
+    def test_an_item_the_corpus_has_no_rule_for_is_uncovered(self) -> None:
+        for label, query in UNCOVERED_ELIGIBILITY_QUERIES:
+            with self.subTest(case=label):
+                self.assertEqual(self._classify(query), "uncovered")
+
+    def test_an_item_the_corpus_lists_stays_answerable(self) -> None:
+        for label, query in COVERED_ELIGIBILITY_QUERIES:
+            with self.subTest(case=label):
+                self.assertEqual(self._classify(query), "covered")
+
+    def test_no_uncovered_item_is_ever_admitted_to_an_answer(self) -> None:
+        # The outcome the two layers exist for, asserted across both of
+        # them: an item with no rule behind it is refused whether the
+        # scope gate or this classifier is what stops it.
+        for label, query in (
+            UNCOVERED_ELIGIBILITY_QUERIES + SCOPE_REFUSED_ELIGIBILITY_QUERIES
+        ):
+            with self.subTest(case=label):
+                decision = validate_scope(query)
+                admitted = decision.supported and (
+                    classify_expense_eligibility(query, decision.topics)
+                    != "uncovered"
+                )
+
+                self.assertFalse(admitted)
+
+    def test_a_procedure_question_is_not_an_eligibility_question(
+        self,
+    ) -> None:
+        for label, query in PROCEDURE_QUERIES:
+            with self.subTest(case=label):
+                self.assertEqual(
+                    self._classify(query), "not_an_eligibility_question"
+                )
+
+    def test_the_gate_only_applies_to_the_process_policy(self) -> None:
+        # The rule exists because the reimbursement PROCESS policy grants
+        # no item. A question the gate is handed under any other topic is
+        # not its business, whatever wording it uses.
+        for topics in (
+            ("receipt_policy",),
+            ("annual_leave",),
+            # A question that also resolved the receipt topic is asking
+            # which evidence a claim may use, and FIN-002 states a rule
+            # for that -- so it is not an ungranted item.
+            ("receipt_policy", "reimbursement_process"),
+        ):
+            with self.subTest(topics=topics):
+                self.assertEqual(
+                    classify_expense_eligibility(
+                        "ค่ากาแฟลูกค้าเบิกได้ไหม", topics
+                    ),
+                    "not_an_eligibility_question",
+                )
+
+    def test_an_evidence_question_is_never_read_as_an_expense_right(
+        self,
+    ) -> None:
+        # The regression this gate's first shape caused: a question about
+        # whether a transfer screenshot may stand in for a receipt asks
+        # about evidence, and refusing it would deny a rule FIN-002
+        # states (eval/retrieval_calibration.json, cal_noisy_07).
+        query = "โอนเงินผ่านแอปแล้วแคปหน้าจอมาเบิกได้มั้ย"
+
+        self.assertEqual(self._classify(query), "not_an_eligibility_question")

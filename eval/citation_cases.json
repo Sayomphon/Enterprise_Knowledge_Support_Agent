@@ -4,12 +4,22 @@
     "claims": [
       {
         "text": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน",
-        "source_ids": ["FIN-001"]
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001", "CHAT-001", "FIN-002"],
-    "authoritative_ids": ["FIN-001", "FIN-002"],
+    "evidence_ids": [
+      "FIN-001",
+      "CHAT-001",
+      "FIN-002"
+    ],
+    "authoritative_ids": [
+      "FIN-001",
+      "FIN-002"
+    ],
     "evidence_texts": {
       "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
     },
@@ -20,46 +30,82 @@
     "claims": [
       {
         "text": "แจ้งหัวหน้าทีมก่อนเวลาเริ่มงาน",
-        "source_ids": ["HR-002"]
+        "source_ids": [
+          "HR-002"
+        ],
+        "evidence_quote": "แจ้งหัวหน้าทีมก่อนเวลาเริ่มงาน"
       },
       {
-        "text": "ดูสิทธิ์วันลาคงเหลือได้จากนโยบายวันลาประจำปี",
-        "source_ids": ["HR-001"]
+        "text": "ดูสิทธิ์วันลาพักร้อนได้จากนโยบายวันลาประจำปี",
+        "source_ids": [
+          "HR-001"
+        ],
+        "evidence_quote": "ลาพักร้อนได้ 10 วันต่อปี"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["HR-001", "HR-002"],
-    "authoritative_ids": ["HR-001", "HR-002"],
-    "expected_valid": true
+    "evidence_ids": [
+      "HR-001",
+      "HR-002"
+    ],
+    "authoritative_ids": [
+      "HR-001",
+      "HR-002"
+    ],
+    "expected_valid": true,
+    "evidence_texts": {
+      "HR-001": "พนักงานประจำมีสิทธิ์ลาพักร้อนได้ 10 วันต่อปี และต้องแจ้งล่วงหน้า",
+      "HR-002": "พนักงานต้องแจ้งหัวหน้าทีมก่อนเวลาเริ่มงานในวันที่ลาป่วย"
+    }
   },
   {
     "id": "cit_valid_policy_with_chat_context",
     "claims": [
       {
         "text": "ค่าแท็กซี่หลังทำงานล่วงเวลาเบิกได้ตามจริงพร้อมใบเสร็จ",
-        "source_ids": ["FIN-001", "CHAT-001"]
+        "source_ids": [
+          "FIN-001",
+          "CHAT-001"
+        ],
+        "evidence_quote": "ค่าแท็กซี่หลังทำงานล่วงเวลาเบิกได้ตามจริงพร้อมใบเสร็จ"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001", "CHAT-001"],
-    "authoritative_ids": ["FIN-001"],
-    "expected_valid": true
+    "evidence_ids": [
+      "FIN-001",
+      "CHAT-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
+    "expected_valid": true,
+    "evidence_texts": {
+      "FIN-001": "ค่าแท็กซี่หลังทำงานล่วงเวลาเบิกได้ตามจริงพร้อมใบเสร็จ"
+    }
   },
   {
     "id": "cit_missing_source_on_one_claim",
     "claims": [
       {
         "text": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน",
-        "source_ids": ["FIN-001"]
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       },
       {
         "text": "ค่าอาหารระหว่างเดินทางเบิกได้ไม่เกินวันละ 500 บาท",
-        "source_ids": []
+        "source_ids": [],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "evidence_texts": {
       "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
     },
@@ -71,202 +117,355 @@
     "claims": [
       {
         "text": "ยื่นเบิกผ่าน Expense Portal ได้เลย",
-        "source_ids": ["ZZ-999"]
+        "source_ids": [
+          "ZZ-999"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "expected_valid": false,
-    "expected_reason": "fabricated_citation"
+    "expected_reason": "fabricated_citation",
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    }
   },
   {
     "id": "cit_real_document_not_selected",
     "claims": [
       {
         "text": "ดูนโยบายการทำงานจากที่บ้านได้จากเอกสารนโยบาย",
-        "source_ids": ["HR-003"]
+        "source_ids": [
+          "HR-003"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001", "FIN-002"],
-    "authoritative_ids": ["FIN-001", "FIN-002"],
+    "evidence_ids": [
+      "FIN-001",
+      "FIN-002"
+    ],
+    "authoritative_ids": [
+      "FIN-001",
+      "FIN-002"
+    ],
     "expected_valid": false,
-    "expected_reason": "fabricated_citation"
+    "expected_reason": "fabricated_citation",
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    }
   },
   {
     "id": "cit_mixed_valid_and_fabricated",
     "claims": [
       {
         "text": "เบิกได้ตามจริงตามนโยบายการเบิกค่าใช้จ่าย",
-        "source_ids": ["FIN-001"]
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "เบิกได้ตามจริงตามนโยบายการเบิกค่าใช้จ่าย"
       },
       {
         "text": "วงเงินพิเศษดูได้จากเอกสารเพิ่มเติม",
-        "source_ids": ["AB-123"]
+        "source_ids": [
+          "AB-123"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "expected_valid": false,
-    "expected_reason": "fabricated_citation"
+    "expected_reason": "fabricated_citation",
+    "evidence_texts": {
+      "FIN-001": "เบิกได้ตามจริงตามนโยบายการเบิกค่าใช้จ่ายขององค์กร"
+    }
   },
   {
     "id": "cit_chat_only_claim",
     "claims": [
       {
         "text": "เพื่อนร่วมงานบอกว่าเบิกค่าแท็กซี่ย้อนหลังได้ 60 วัน",
-        "source_ids": ["CHAT-001"]
+        "source_ids": [
+          "CHAT-001"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001", "CHAT-001"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001",
+      "CHAT-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "expected_valid": false,
-    "expected_reason": "no_authoritative_evidence"
+    "expected_reason": "no_authoritative_evidence",
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    }
   },
   {
     "id": "cit_no_claims_without_flag",
     "claims": [],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "expected_valid": false,
-    "expected_reason": "invalid_answer_structure"
+    "expected_reason": "invalid_answer_structure",
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    }
   },
   {
     "id": "cit_blank_claim_text",
     "claims": [
       {
         "text": "   ",
-        "source_ids": ["FIN-001"]
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "expected_valid": false,
-    "expected_reason": "invalid_answer_structure"
+    "expected_reason": "invalid_answer_structure",
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    }
   },
   {
     "id": "cit_model_written_citation_markup",
     "claims": [
       {
         "text": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน [FIN-001]",
-        "source_ids": ["FIN-001"]
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "expected_valid": false,
-    "expected_reason": "invalid_answer_structure"
+    "expected_reason": "invalid_answer_structure",
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    }
   },
   {
     "id": "cit_duplicate_source_ids",
     "claims": [
       {
         "text": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน",
-        "source_ids": ["FIN-001", "FIN-001"]
+        "source_ids": [
+          "FIN-001",
+          "FIN-001"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "expected_valid": false,
-    "expected_reason": "invalid_answer_structure"
+    "expected_reason": "invalid_answer_structure",
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    }
   },
   {
     "id": "cit_insufficient_evidence_flag",
     "claims": [],
     "insufficient_evidence": true,
-    "evidence_ids": ["FIN-001"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "expected_valid": false,
-    "expected_reason": "insufficient_reporter_evidence"
+    "expected_reason": "insufficient_reporter_evidence",
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    }
   },
   {
     "id": "cit_insufficient_flag_with_claims",
     "claims": [
       {
         "text": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน",
-        "source_ids": ["FIN-001"]
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       }
     ],
     "insufficient_evidence": true,
-    "evidence_ids": ["FIN-001"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "expected_valid": false,
-    "expected_reason": "invalid_answer_structure"
+    "expected_reason": "invalid_answer_structure",
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    }
   },
   {
     "id": "cit_claim_with_line_break",
     "claims": [
       {
         "text": "พนักงานต้องแนบใบเสร็จทุกครั้ง\nค่าแท็กซี่ล่วงเวลาเบิกได้ไม่เกิน 500 บาท",
-        "source_ids": ["FIN-001"]
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001", "FIN-002"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001",
+      "FIN-002"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "expected_valid": false,
-    "expected_reason": "invalid_answer_structure"
+    "expected_reason": "invalid_answer_structure",
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    }
   },
   {
     "id": "cit_lowercase_citation_markup",
     "claims": [
       {
         "text": "ตามระเบียบ [fin-001] ต้องแนบใบเสร็จทุกครั้ง",
-        "source_ids": ["FIN-001"]
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001", "FIN-002"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001",
+      "FIN-002"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "expected_valid": false,
-    "expected_reason": "invalid_answer_structure"
+    "expected_reason": "invalid_answer_structure",
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    }
   },
   {
     "id": "cit_round_bracket_citation_markup",
     "claims": [
       {
         "text": "ตามระเบียบ (FIN-777) ต้องแนบใบเสร็จทุกครั้ง",
-        "source_ids": ["FIN-001"]
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001", "FIN-002"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001",
+      "FIN-002"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "expected_valid": false,
-    "expected_reason": "invalid_answer_structure"
+    "expected_reason": "invalid_answer_structure",
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    }
   },
   {
     "id": "cit_four_digit_citation_markup",
     "claims": [
       {
         "text": "ตามระเบียบ [FIN-0012] ต้องแนบใบเสร็จทุกครั้ง",
-        "source_ids": ["FIN-001"]
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001", "FIN-002"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001",
+      "FIN-002"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "expected_valid": false,
-    "expected_reason": "invalid_answer_structure"
+    "expected_reason": "invalid_answer_structure",
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    }
   },
   {
     "id": "cit_benign_parenthetical_and_hyphen",
     "claims": [
       {
         "text": "ยื่นภายใน 30 วัน (นับจากวันที่จ่าย) และใช้ e-receipt แทนใบเสร็จกระดาษได้",
-        "source_ids": ["FIN-001"]
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001", "FIN-002"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001",
+      "FIN-002"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "evidence_texts": {
       "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
     },
@@ -277,12 +476,19 @@
     "claims": [
       {
         "text": "พนักงานลาพักร้อนได้ 15 วันต่อปี",
-        "source_ids": ["HR-001"]
+        "source_ids": [
+          "HR-001"
+        ],
+        "evidence_quote": "พนักงานประจำมีสิทธิ์ลาพักร้อนได้ 10 วันต่อปี"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["HR-001"],
-    "authoritative_ids": ["HR-001"],
+    "evidence_ids": [
+      "HR-001"
+    ],
+    "authoritative_ids": [
+      "HR-001"
+    ],
     "evidence_texts": {
       "HR-001": "พนักงานประจำมีสิทธิ์ลาพักร้อนได้ 10 วันต่อปี"
     },
@@ -295,28 +501,43 @@
     "claims": [
       {
         "text": "การลาพักร้อน 3 วันต้องแจ้งล่วงหน้าตามระเบียบวันลาประจำปี",
-        "source_ids": ["HR-001"]
+        "source_ids": [
+          "HR-001"
+        ],
+        "evidence_quote": "ลาพักร้อนได้ 10 วันต่อปี และต้องแจ้งล่วงหน้า"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["HR-001"],
-    "authoritative_ids": ["HR-001"],
+    "evidence_ids": [
+      "HR-001"
+    ],
+    "authoritative_ids": [
+      "HR-001"
+    ],
     "evidence_texts": {
       "HR-001": "พนักงานประจำมีสิทธิ์ลาพักร้อนได้ 10 วันต่อปี และต้องแจ้งล่วงหน้า"
     },
-    "expected_valid": true
+    "expected_valid": false,
+    "expected_reason": "unsupported_numeric_claim"
   },
   {
     "id": "cit_time_anchor_supported",
     "claims": [
       {
         "text": "ค่าแท็กซี่เบิกได้เมื่อเลิกงานหลังเวลา 22:00 น.",
-        "source_ids": ["FIN-001"]
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "evidence_texts": {
       "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
     },
@@ -327,16 +548,194 @@
     "claims": [
       {
         "text": "ค่าแท็กซี่เบิกได้เมื่อเลิกงานหลังเวลา 20:00 น.",
-        "source_ids": ["FIN-001"]
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
       }
     ],
     "insufficient_evidence": false,
-    "evidence_ids": ["FIN-001"],
-    "authoritative_ids": ["FIN-001"],
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
     "evidence_texts": {
       "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
     },
     "expected_valid": false,
     "expected_reason": "unsupported_numeric_claim"
+  },
+  {
+    "id": "cit_quote_absent_from_the_cited_policy",
+    "claims": [
+      {
+        "text": "พนักงานเบิกค่าเดินทางมาทำงานประจำวันได้",
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "ค่าเดินทางมาทำงานประจำวันเบิกได้ตามจริง"
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    },
+    "expected_valid": false,
+    "expected_reason": "unsupported_claim_span"
+  },
+  {
+    "id": "cit_quote_from_the_chat_document_only",
+    "claims": [
+      {
+        "text": "เบิกค่าแท็กซี่ได้โดยไม่ต้องแนบใบเสร็จ",
+        "source_ids": [
+          "FIN-001",
+          "CHAT-001"
+        ],
+        "evidence_quote": "เบิกค่าแท็กซี่ได้โดยไม่ต้องแนบใบเสร็จ"
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": [
+      "FIN-001",
+      "CHAT-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง",
+      "CHAT-001": "เพื่อนบอกว่าเบิกค่าแท็กซี่ได้โดยไม่ต้องแนบใบเสร็จ"
+    },
+    "expected_valid": false,
+    "expected_reason": "unsupported_claim_span"
+  },
+  {
+    "id": "cit_missing_quote_is_rejected",
+    "claims": [
+      {
+        "text": "ยื่นเบิกผ่าน Expense Portal ได้ตามขั้นตอน",
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": ""
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    },
+    "expected_valid": false,
+    "expected_reason": "unsupported_claim_span"
+  },
+  {
+    "id": "cit_quote_too_short_to_prove_anything",
+    "claims": [
+      {
+        "text": "ยื่นเบิกผ่าน Expense Portal ได้ตามขั้นตอน",
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "30 วัน"
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    },
+    "expected_valid": false,
+    "expected_reason": "unsupported_claim_span"
+  },
+  {
+    "id": "cit_figure_in_the_document_but_not_the_quote",
+    "claims": [
+      {
+        "text": "ค่าแท็กซี่เบิกได้เมื่อเลิกงานหลัง 22:00 น.",
+        "source_ids": [
+          "FIN-001"
+        ],
+        "evidence_quote": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": [
+      "FIN-001"
+    ],
+    "authoritative_ids": [
+      "FIN-001"
+    ],
+    "evidence_texts": {
+      "FIN-001": "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    },
+    "expected_valid": false,
+    "expected_reason": "unsupported_numeric_claim"
+  },
+  {
+    "id": "cit_wrong_policy_under_a_right_looking_citation",
+    "claims": [
+      {
+        "text": "พนักงานลาพักร้อนได้ 30 วันต่อปี",
+        "source_ids": [
+          "HR-002"
+        ],
+        "evidence_quote": "แจ้งหัวหน้าทีมก่อนเวลาเริ่มงาน"
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": [
+      "HR-002"
+    ],
+    "authoritative_ids": [
+      "HR-002"
+    ],
+    "evidence_texts": {
+      "HR-002": "พนักงานต้องแจ้งหัวหน้าทีมก่อนเวลาเริ่มงานในวันที่ลาป่วย"
+    },
+    "expected_valid": false,
+    "expected_reason": "unsupported_numeric_claim"
+  },
+  {
+    "id": "cit_question_figure_no_longer_supports_a_claim",
+    "query": "ขอลาพักร้อน 3 วันต้องแจ้งล่วงหน้าไหม",
+    "claims": [
+      {
+        "text": "การลาพักร้อนต้องแจ้งล่วงหน้าตามระเบียบวันลาประจำปี",
+        "source_ids": [
+          "HR-001"
+        ],
+        "evidence_quote": "ลาพักร้อนได้ 10 วันต่อปี และต้องแจ้งล่วงหน้า"
+      }
+    ],
+    "insufficient_evidence": false,
+    "evidence_ids": [
+      "HR-001"
+    ],
+    "authoritative_ids": [
+      "HR-001"
+    ],
+    "evidence_texts": {
+      "HR-001": "พนักงานประจำมีสิทธิ์ลาพักร้อนได้ 10 วันต่อปี และต้องแจ้งล่วงหน้า"
+    },
+    "expected_valid": true
   }
 ]

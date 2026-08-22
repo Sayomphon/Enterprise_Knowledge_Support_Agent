@@ -50,6 +50,13 @@ class ReasonCode(enum.StrEnum):
         - one for a question too under-specified to name a topic, split
           out of ``unsupported_topic`` because the corpus may well hold
           the answer and only the employee can say which one they meant
+        - one for an eligibility question about an expense item no policy
+          grants, which is not the same fact as an unsupported topic: the
+          topic IS supported, and it is the item that has no rule
+        - one for a claim whose quoted evidence is missing from every
+          policy document it cites, which is the difference between
+          proving where a claim came from and proving that its source
+          says it
     """
 
     PROMPT_INJECTION = "prompt_injection"
@@ -73,6 +80,8 @@ class ReasonCode(enum.StrEnum):
     LLM_NOT_CONFIGURED = "llm_not_configured"
     REQUEST_DEADLINE_EXCEEDED = "request_deadline_exceeded"
     AMBIGUOUS_TOPIC = "ambiguous_topic"
+    UNCOVERED_EXPENSE_ITEM = "uncovered_expense_item"
+    UNSUPPORTED_CLAIM_SPAN = "unsupported_claim_span"
 
 
 REFUSAL_TEXT = (
@@ -139,6 +148,16 @@ _AMBIGUOUS_TOPIC_BODY = (
     "กรุณาระบุให้ชัดขึ้น เช่น ประเภทการลา (ลาพักร้อน / ลาป่วย) "
     "หรือประเภทค่าใช้จ่ายที่ต้องการเบิก"
 )
+# An eligibility question needs its own answer for the same reason: the
+# generic text says no evidence was found, which reads as "ask again more
+# precisely" and would send an employee to file a claim after rewording.
+# The fact here is different and actionable -- no policy states that this
+# item is claimable at all -- and Finance, not HR, is who decides that.
+_UNCOVERED_EXPENSE_BODY = (
+    "ไม่พบนโยบายที่ระบุว่าค่าใช้จ่ายรายการนี้เบิกได้\n"
+    "ระเบียบที่มีอยู่ครอบคลุมขั้นตอนการยื่นเบิกและค่าเดินทางบางรายการเท่านั้น\n"
+    "กรุณาสอบถามฝ่ายการเงินก่อนยื่นเบิก"
+)
 _LOGGED_NOTICE = "คำถามนี้ถูกบันทึกไว้เพื่อใช้ปรับปรุงระบบแล้ว"
 _LOG_UNAVAILABLE_NOTICE = (
     "ระบบไม่สามารถบันทึกคำถามเพื่อการวิเคราะห์ได้ในขณะนี้"
@@ -155,6 +174,10 @@ SERVICE_UNAVAILABLE_TEXT_UNLOGGED = (
 AMBIGUOUS_TOPIC_TEXT = f"{_AMBIGUOUS_TOPIC_BODY}\n{_LOGGED_NOTICE}"
 AMBIGUOUS_TOPIC_TEXT_UNLOGGED = (
     f"{_AMBIGUOUS_TOPIC_BODY}\n{_LOG_UNAVAILABLE_NOTICE}"
+)
+UNCOVERED_EXPENSE_TEXT = f"{_UNCOVERED_EXPENSE_BODY}\n{_LOGGED_NOTICE}"
+UNCOVERED_EXPENSE_TEXT_UNLOGGED = (
+    f"{_UNCOVERED_EXPENSE_BODY}\n{_LOG_UNAVAILABLE_NOTICE}"
 )
 
 # Reason codes that name a stage which FAILED rather than an evidence
@@ -215,6 +238,25 @@ def is_ambiguous_topic(reason: str | None) -> bool:
     return reason == ReasonCode.AMBIGUOUS_TOPIC
 
 
+def is_uncovered_expense_item(reason: str | None) -> bool:
+    """Report whether a fallback reason describes an ungranted expense.
+
+    Asked by the response selector for the same reason as the two
+    classifications above: the corpus does hold the topic, and telling
+    the employee it holds nothing would send them back to reword a
+    question whose answer no policy contains.
+
+    Args:
+        reason: Reason code recorded for a degraded request, or ``None``
+            when the request did not degrade.
+
+    Returns:
+        True when the request degraded because no policy grants the
+        expense item the question asked about.
+    """
+    return reason == ReasonCode.UNCOVERED_EXPENSE_ITEM
+
+
 class ReasonFamily(enum.StrEnum):
     """Analytics grouping over ``ReasonCode``.
 
@@ -264,6 +306,9 @@ _REASON_FAMILIES: dict[str, ReasonFamily] = {
     # run of them says the catalog's topics are not visible enough to
     # employees, which is a documentation job like the others here.
     ReasonCode.AMBIGUOUS_TOPIC.value: ReasonFamily.KNOWLEDGE_GAP,
+    # A run of these is a policy somebody has to write -- the corpus has
+    # no rule for the item -- which is the same job as the other gaps.
+    ReasonCode.UNCOVERED_EXPENSE_ITEM.value: ReasonFamily.KNOWLEDGE_GAP,
     ReasonCode.MISSING_CITATION.value: ReasonFamily.VALIDATION_FAILURE,
     ReasonCode.FABRICATED_CITATION.value: ReasonFamily.VALIDATION_FAILURE,
     ReasonCode.INVALID_ANSWER_STRUCTURE.value: (
@@ -280,6 +325,10 @@ _REASON_FAMILIES: dict[str, ReasonFamily] = {
     ReasonCode.UNSUPPORTED_NUMERIC_CLAIM.value: (
         ReasonFamily.VALIDATION_FAILURE
     ),
+    # The model produced a claim whose quote is in no policy it cited:
+    # this repository's contract rejecting model output, like the codes
+    # around it, rather than a measurement of the corpus.
+    ReasonCode.UNSUPPORTED_CLAIM_SPAN.value: ReasonFamily.VALIDATION_FAILURE,
     # Here the rewriter worked and the deterministic validator refused
     # its output, which is this repository's contract rejecting model
     # output -- the same shape as an invalid answer, not a stage outage.
@@ -336,15 +385,16 @@ def response_text_for_state(
         route: Final ``route`` value from the pipeline state.
         guardrail_reason: Guardrail reason code for blocked requests.
         fallback_reason: Reason code recorded for a degraded request.
-            It selects between three bodies and nothing finer: a service
+            It selects between four bodies and nothing finer: a service
             state (``_SERVICE_FAILURE_REASONS``) tells the employee to
             try again, an under-specified question asks them to name
-            what they meant, and every remaining evidence outcome shares
-            one text, because naming the individual verdicts would turn
-            internal routing into user-facing noise the employee cannot
-            act on. The three differ in what the employee should DO
-            next, which is the only distinction worth spending a
-            separate message on.
+            what they meant, an expense item no policy grants sends them
+            to Finance before they file, and every remaining evidence
+            outcome shares one text, because naming the individual
+            verdicts would turn internal routing into user-facing noise
+            the employee cannot act on. The four differ in what the
+            employee should DO next, which is the only distinction worth
+            spending a separate message on.
         telemetry_logged: Whether this request's event reached the JSONL
             sink. ``False`` selects the wording that does not claim the
             question was recorded. The graph sets the flag on every route
@@ -372,5 +422,11 @@ def response_text_for_state(
             AMBIGUOUS_TOPIC_TEXT
             if telemetry_logged
             else AMBIGUOUS_TOPIC_TEXT_UNLOGGED
+        )
+    if is_uncovered_expense_item(fallback_reason):
+        return (
+            UNCOVERED_EXPENSE_TEXT
+            if telemetry_logged
+            else UNCOVERED_EXPENSE_TEXT_UNLOGGED
         )
     return FALLBACK_TEXT if telemetry_logged else FALLBACK_TEXT_UNLOGGED

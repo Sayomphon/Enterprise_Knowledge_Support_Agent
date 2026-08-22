@@ -14,6 +14,7 @@ overlap asks "how much do these two texts share overall".
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 # Fragments of two to four characters. Two-character fragments alone let
@@ -61,6 +62,29 @@ def character_ngrams(
     return fragments
 
 
+def required_tokens(phrase: str) -> tuple[str, ...]:
+    """Return the words a whitespace-delimited phrase must find verbatim.
+
+    Character n-grams exist because Thai has no reliable word boundaries,
+    and on a language that HAS them the measure over-fires: the fragments
+    of "sick leave" that appear in "how many annual leave days" all come
+    from the single word "leave", yet they are half the phrase, which
+    scored the sick-leave topic 0.5 on an annual-leave question. Where a
+    token boundary really exists, it is evidence and this uses it.
+
+    Args:
+        phrase: A normalized reference phrase, for example a topic alias.
+
+    Returns:
+        The phrase's whitespace tokens when it is written in ASCII and
+        holds more than one of them, else an empty tuple. Thai and mixed
+        aliases return nothing and keep the pure n-gram behaviour, which
+        is what the scope threshold was calibrated on.
+    """
+    tokens = phrase.split()
+    return tuple(tokens) if len(tokens) > 1 and phrase.isascii() else ()
+
+
 def containment(
     phrase: str,
     text: str,
@@ -79,8 +103,9 @@ def containment(
 
     Returns:
         The share of the phrase's n-grams present in the text, in
-        [0.0, 1.0]. Returns 1.0 when the phrase occurs verbatim, and 0.0
-        when the phrase is too short to produce any n-gram.
+        [0.0, 1.0]. Returns 1.0 when the phrase occurs verbatim, 0.0 when
+        the phrase is too short to produce any n-gram, and 0.0 when a
+        multi-word ASCII phrase is missing one of its own words.
     """
     normalized_phrase = normalize_for_matching(phrase)
     normalized_text = normalize_for_matching(text)
@@ -89,6 +114,7 @@ def containment(
         character_ngrams(normalized_phrase, ngram_range),
         normalized_text,
         character_ngrams(normalized_text, ngram_range),
+        tokens=required_tokens(normalized_phrase),
     )
 
 
@@ -97,6 +123,7 @@ def containment_of_ngrams(
     phrase_ngrams: set[str],
     text: str,
     text_ngrams: set[str],
+    tokens: tuple[str, ...] = (),
 ) -> float:
     """Score containment from fragments the caller already computed.
 
@@ -110,15 +137,33 @@ def containment_of_ngrams(
         phrase_ngrams: Fragments of ``phrase``.
         text: Normalized text to search, for the verbatim check.
         text_ngrams: Fragments of ``text``.
+        tokens: Words the phrase must contribute whole, from
+            ``required_tokens``. Empty means no token gate, which is the
+            behaviour every Thai alias keeps.
 
     Returns:
         The same value ``containment`` would return for the two strings.
     """
+    if tokens and not _all_tokens_present(text, tokens):
+        return 0.0
     if phrase and phrase in text:
         return 1.0
     if not phrase_ngrams:
         return 0.0
     return len(phrase_ngrams & text_ngrams) / len(phrase_ngrams)
+
+
+def _all_tokens_present(text: str, tokens: tuple[str, ...]) -> bool:
+    """Report whether every token occurs in the text as a whole word.
+
+    Word boundaries rather than plain substrings: "leave" must not be
+    satisfied by "leaves" belonging to another phrase, and a token glued
+    inside a longer run of letters is not the word the alias named.
+    """
+    return all(
+        re.search(rf"\b{re.escape(token)}\b", text) is not None
+        for token in tokens
+    )
 
 
 def overlap(
