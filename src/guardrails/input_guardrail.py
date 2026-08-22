@@ -59,14 +59,26 @@ _FORMAT_CHARACTERS = "​‌‍⁠﻿­"
 # "e receipt" for matching -- and closes "ignore.previous.instructions".
 _SEPARATOR_CHARACTERS = "._*/\\|~+,;:‐‑‒–—―-"
 
-# NFKC folds fullwidth and other compatibility spellings into plain
-# ASCII, but it also splits Thai SARA AM into nikhahit + sara aa, and NFC
-# does not put it back because that character is a composition exclusion.
-# Recomposing it keeps every Thai rule written in the ordinary spelling
-# while still gaining the compatibility folding, and it canonicalizes a
-# query that arrives already decomposed.
-_THAI_SARA_AM = "\u0e33"
-_THAI_DECOMPOSED_SARA_AM = "\u0e4d\u0e32"
+# Digits and symbols that render like the letters they replace, so
+# "1gnore" reads normally on an employee's screen while missing every
+# rule written in ASCII letters.
+#
+# The folding is applied ONLY to a token that mixes letters with one of
+# these characters, and that condition carries the whole safety of the
+# rule: mapping them across a whole query would turn "5000 baht" into
+# "sooo baht" and every amount in this domain into a word. A token that
+# is all digits is a figure, and a token with no digit at all already
+# carries its plain spelling.
+_LEET_FOLDING = {
+    ord("0"): "o",
+    ord("1"): "i",
+    ord("3"): "e",
+    ord("4"): "a",
+    ord("5"): "s",
+    ord("7"): "t",
+    ord("@"): "a",
+    ord("$"): "s",
+}
 
 _MATCH_TRANSLATION = {
     **{ord(character): None for character in _FORMAT_CHARACTERS},
@@ -279,6 +291,74 @@ INJECTION_RULES: tuple[InjectionRule, ...] = (
             re.IGNORECASE,
         ),
     ),
+    InjectionRule(
+        # English "do not follow your rules". The possessive is required
+        # for the reason the disclosure rules require it: "do not follow
+        # the old expense rule" is an ordinary instruction about a
+        # document, and only "your" makes it about the assistant.
+        rule_id="english_do_not_follow_rules",
+        pattern=re.compile(
+            r"(?:do\s{1,5}not|don't|dont|never|stop)\s{1,5}"
+            r"(?:follow|obey|apply)(?:ing)?\s{1,5}your\s{1,5}"
+            r"(?:rules?|instructions?|guidelines?|policies|policy)",
+            re.IGNORECASE,
+        ),
+    ),
+    InjectionRule(
+        # English "from now on act as an unrestricted assistant". Two
+        # anchors are required, not one: "from now on" alone is how an
+        # employee announces a change to their own habits, and "act as"
+        # is ordinary delegation wording. What makes it an attack is the
+        # role being one without rules, so the pattern demands that too.
+        rule_id="english_from_now_on_role",
+        pattern=re.compile(
+            r"from\s{1,5}now\s{1,5}on[^\n]{0,20}"
+            r"(?:you\s{1,5}are|act\s{1,5}as|pretend|behave\s{1,5}as|"
+            r"roleplay)[^\n]{0,30}"
+            r"(?:unrestricted|unfiltered|jailbroken|no\s{1,5}rules?|"
+            r"no\s{1,5}restrictions?|without\s{1,5}"
+            r"(?:rules?|restrictions?|limits?|filters?))",
+            re.IGNORECASE,
+        ),
+    ),
+    InjectionRule(
+        # English "ignore everything you were told". The flagship rule
+        # keys on a determiner plus "previous instructions"; this shape
+        # names no instructions at all, so it passed. The tail list is
+        # closed on purpose -- "ignore everything except the receipt" is
+        # a real instruction about a claim and must keep passing.
+        rule_id="english_ignore_everything",
+        pattern=re.compile(
+            r"(?:ignore|disregard|forget)\s{1,5}everything\s{1,5}"
+            r"(?:you\s{1,5}(?:were\s{1,5}told|know|have\s{1,5}been\s{1,5}told)"
+            r"|above|before|previously|i\s{1,5}(?:said|told\s{1,5}you))",
+            re.IGNORECASE,
+        ),
+    ),
+    InjectionRule(
+        # Thai "do not trust your existing rules". Three parts are
+        # required -- the distrust verb, a rule noun, and the tail that
+        # points it at the assistant -- because the verb alone is
+        # ordinary advice ("don't trust what a colleague told you, ask
+        # for the real policy"), which is this rule's benign twin.
+        rule_id="thai_do_not_trust_rules",
+        pattern=re.compile(
+            r"(?:ไม่ต้องเชื่อ|ห้ามเชื่อ|อย่าเชื่อ)[^\n]{0,10}"
+            r"(?:กฎ|คำสั่ง(?!ซื้อ)|ข้อกำหนด|ระเบียบ)[^\n]{0,10}"
+            r"(?:เดิม|ของคุณ|ระบบ|ก่อนหน้า|ที่ตั้งไว้)"
+        ),
+    ),
+    InjectionRule(
+        # Thai "from now on, act as / take the role of". The tail is a
+        # role-play verb rather than any verb: "from now on I will file
+        # every month" shares the opening and is an employee describing
+        # their own plan.
+        rule_id="thai_act_as_role",
+        pattern=re.compile(
+            r"(?:ตั้งแต่นี้ไป|ต่อจากนี้|จากนี้ไป|นับจากนี้)[^\n]{0,10}"
+            r"(?:ทำตัวเป็น|สวมบทบาท|รับบทเป็น|ปลอมตัวเป็น|แกล้งเป็น)"
+        ),
+    ),
 )
 
 
@@ -317,32 +397,68 @@ def guardrail_match_text(query: str) -> str:
     return _fold(query, _MATCH_TRANSLATION)
 
 
-def guardrail_match_variants(query: str) -> tuple[str, str]:
-    """Return both hardened foldings every rule must be matched against.
+def guardrail_match_variants(query: str) -> tuple[str, ...]:
+    """Return every hardened folding the rules must be matched against.
 
     Args:
         query: NFC-normalized query text.
 
     Returns:
-        The folding that deletes format characters and the folding that
-        turns them into spaces, in that order. Matching both closes an
-        attacker's choice of where to hide the invisible character; it
-        costs one extra pass over a string already bounded by
-        ``MAX_QUERY_CHARS``, and the two are identical whenever the query
-        contains no format character at all.
+        The folding that deletes format characters, the folding that
+        turns them into spaces, and the leetspeak-resolved form of each,
+        deduplicated with the order preserved. Matching all of them
+        closes the attacker's two choices -- where to hide an invisible
+        character, and which letters to spell as digits -- and costs
+        nothing on an ordinary query, which produces a single distinct
+        string. Every pass runs over text already bounded by
+        ``MAX_QUERY_CHARS``.
     """
-    return (
+    foldings = (
         _fold(query, _MATCH_TRANSLATION),
         _fold(query, _SPACED_MATCH_TRANSLATION),
+    )
+    # dict.fromkeys rather than a set: the order is what makes a rule
+    # report reproducible when two foldings would both match.
+    return tuple(
+        dict.fromkeys(
+            (*foldings, *(_leet_folded(text) for text in foldings))
+        )
+    )
+
+
+def _leet_folded(text: str) -> str:
+    """Resolve digit-for-letter spellings inside mixed tokens only.
+
+    Args:
+        text: One already-hardened folding, whitespace-collapsed.
+
+    Returns:
+        The same text with confusable digits resolved in every token
+        that mixes letters with them, and every other token untouched --
+        so an amount stays an amount and a room number stays a number.
+    """
+    return " ".join(
+        token.translate(_LEET_FOLDING) if _is_mixed_token(token) else token
+        for token in text.split()
+    )
+
+
+def _is_mixed_token(token: str) -> bool:
+    """Report whether one token spells letters and confusables together."""
+    return any(character.isalpha() for character in token) and any(
+        ord(character) in _LEET_FOLDING for character in token
     )
 
 
 def _fold(query: str, translation: Mapping[int, str | None]) -> str:
-    """Apply one hardening table to a query."""
-    folded = unicodedata.normalize("NFKC", query).replace(
-        _THAI_DECOMPOSED_SARA_AM, _THAI_SARA_AM
-    )
-    folded = folded.translate(translation)
+    """Apply one hardening table to a query.
+
+    The compatibility step is shared with the contract checks rather
+    than repeated here: NFKC tears Thai SARA AM apart and NFC does not
+    put it back, and a rule about Thai wording that lived in two modules
+    would only have to drift once to open a hole in one of them.
+    """
+    folded = nfkc_fold(query).translate(translation)
     return " ".join(folded.casefold().split())
 
 
