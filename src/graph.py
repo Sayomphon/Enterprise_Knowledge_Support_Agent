@@ -600,6 +600,14 @@ def build_graph(
         candidates, failure_reason = rewrite(
             state["query"], budget_seconds=budget
         )
+        # An unconfigured credential is refused before a client is even
+        # built, so no provider call happened and the record must not
+        # claim one: llm_calls is what tells a rewrite that ran from one
+        # that was skipped (AGENTS.md section 8). A provider error or a
+        # timeout still counts one -- there the call was made and failed.
+        spent_calls = (
+            0 if failure_reason == ReasonCode.LLM_NOT_CONFIGURED.value else 1
+        )
         validation = validate_rewrites(
             state["query"], candidates, state.get("scope_topics", [])
         )
@@ -607,7 +615,7 @@ def build_graph(
             "route": "rewrite",
             "rewritten_queries": list(validation.accepted_queries),
             "rewrite_rejected": validation.reason is not None,
-            "llm_calls": state.get("llm_calls", 0) + 1,
+            "llm_calls": state.get("llm_calls", 0) + spent_calls,
         }
         if failure_reason is not None:
             updates["rewrite_failure_reason"] = failure_reason

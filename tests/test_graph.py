@@ -1471,6 +1471,22 @@ class TestKeylessRoutes(unittest.TestCase):
 
         self.assertEqual(state["fallback_reason"], "llm_not_configured")
 
+    def test_a_rewrite_that_never_ran_costs_no_provider_call(self) -> None:
+        # ``llm_calls`` is how an operator tells a rewrite that ran from
+        # one that was skipped (AGENTS.md section 8). The credential
+        # check refuses before a client is built, so nothing was spent
+        # here and the record must not claim otherwise.
+        graph = self._graph(
+            [_documents(MEDIUM_SCORE), _documents(ALIAS_FAIL_SCORE)]
+        )
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            state: PipelineState = graph.invoke({"query": SLANG_QUERY})
+
+        self.assertEqual(state["llm_calls"], 0)
+        self.assertEqual(self._log_records()[-1]["llm_calls"], 0)
+        self.assertEqual(self.client.call_count, 0)
+
     def test_medium_band_low_expanded_score_still_reports_evidence(
         self,
     ) -> None:
