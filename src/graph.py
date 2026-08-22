@@ -44,7 +44,7 @@ from src.answer_renderer import render_answer
 from src.evidence_selector import select_evidence
 from src.fallback import ReasonCode
 from src.guardrails.citation_validator import validate_answer
-from src.guardrails.input_guardrail import screen_query
+from src.guardrails.input_guardrail import matched_rule, screen_query
 from src.guardrails.rewrite_validator import validate_rewrites
 from src.guardrails.scope_validator import validate_scope
 from src.ingestion.loader import load_documents
@@ -371,7 +371,11 @@ def build_graph(
     rewrite = rewriter if rewriter is not None else safe_rewrite
     report = reporter if reporter is not None else generate_answer
     if documents is None:
-        documents = load_documents()
+        # The corpus is screened at ingestion for instruction-shaped text.
+        # It only warns: this is the layer that gives an operator a name
+        # to look at, while the claim validator downstream is what keeps a
+        # poisoned document out of an answer.
+        documents = load_documents(content_screen=matched_rule)
     if retriever is None:
         retriever = LocalTfidfRetriever(documents)
     documents_by_id = {document.source_id: document for document in documents}

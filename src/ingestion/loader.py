@@ -5,12 +5,23 @@ fast at startup on any malformed document, duplicate identifier, broken
 authority metadata, or path that escapes the configured directory, so
 retrieval can never run over a partially loaded corpus (AGENTS.md
 sections 6.6 and 7).
+
+It also offers a seam for screening document text at ingestion, which the
+graph fills with the injection screen. That screen only WARNS: the corpus
+is trusted-ish operational data, a chat transcript may legitimately quote
+someone telling a colleague to ignore a rule, and refusing to load it
+would break benign evidence to defend against a document that the
+downstream claim validator already contains. The screen is passed in
+rather than imported because the guardrails sit above this module in the
+dependency order (AGENTS.md section 3).
 """
 
 from __future__ import annotations
 
 import re
+import sys
 import unicodedata
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -49,7 +60,11 @@ class CorpusValidationError(ValueError):
     """Raised when the corpus directory or one document violates the schema."""
 
 
-def load_documents(corpus_dir: str | Path | None = None) -> list[Document]:
+def load_documents(
+    corpus_dir: str | Path | None = None,
+    *,
+    content_screen: Callable[[str], str | None] | None = None,
+) -> list[Document]:
     """Load every ``*.md`` corpus file into validated documents.
 
     Args:
@@ -57,6 +72,12 @@ def load_documents(corpus_dir: str | Path | None = None) -> list[Document]:
             ``config.CORPUS_DIR``. The directory and every file in it are
             resolved before reading so the loader only ever touches files
             that really live inside this directory.
+        content_screen: Optional screen applied to each document body,
+            returning the id of a rule the text matches or ``None``. A
+            match is reported on stderr and nothing more: the corpus is
+            not user input, and a benign chat transcript quoting an
+            instruction must still load. It is defence in depth for an
+            operator reading logs, not a control.
 
     Returns:
         Documents ordered by file name, so downstream indexing stays
@@ -92,6 +113,20 @@ def load_documents(corpus_dir: str | Path | None = None) -> list[Document]:
                 f"{path.name}: resolves outside the corpus directory"
             )
         document = _parse_document(resolved)
+        if content_screen is not None:
+            rule_id = content_screen(document.content)
+            if rule_id is not None:
+                # Named on stderr so an operator ingesting a new corpus
+                # sees which file carries instruction-shaped text. The
+                # document still loads, and the answer contract is what
+                # actually stops a poisoned document from being cited
+                # into an answer.
+                print(
+                    f"loader: {path.name} contains text matching injection "
+                    f"rule {rule_id}; it is loaded as evidence, never as "
+                    "instruction",
+                    file=sys.stderr,
+                )
         if document.source_id in defined_in:
             raise CorpusValidationError(
                 f"{path.name}: duplicate source_id {document.source_id!r} "
