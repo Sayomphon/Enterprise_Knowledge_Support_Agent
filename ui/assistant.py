@@ -1,0 +1,409 @@
+"""The employee assistant page: answers, citations, safe messaging.
+
+Operational telemetry -- reason codes, scores, latency, credential state
+-- never appears on this surface; it belongs to the console. What the
+employee reads is either a validated answer with its sources or one of
+the fixed texts selected by ``src.fallback``, never model output that
+the validator refused.
+"""
+
+from __future__ import annotations
+
+import html
+
+import streamlit as st
+
+from src import config
+from src.fallback import (
+    is_service_failure,
+    response_text_for_state,
+)
+from src.schemas import PipelineState
+
+from ui.labels import (
+    ANSWERED_CHIP,
+    AUDIT_ONLY_NOTE,
+    BLOCKED_CHIP,
+    CHAT_PLACEHOLDER,
+    COPY_ANSWER_LABEL,
+    DOWNLOAD_ANSWER_LABEL,
+    EMPLOYEE_VIEW,
+    EMPTY_STATE_HEADLINE,
+    EMPTY_STATE_SUBTITLE,
+    FALLBACK_CHIP,
+    HELP_TEXT,
+    NEW_SESSION_LABEL,
+    NEXT_STEP_PROMPTS,
+    OPS_VIEW,
+    SERVICE_UNAVAILABLE_CHIP,
+    SIMILARITY_FOOTNOTE,
+    SOURCES_HEADER,
+    SUGGESTED_QUESTIONS,
+    USER_TURN_LABEL,
+    VIEW_SEPARATION_NOTE,
+    VIEW_SWITCH_LABELS,
+)
+from ui.styles import _CHAT_LAYOUT_CSS
+from ui.formatting import (
+    _answer_html,
+    _answer_markdown,
+    _brand_html,
+    _evidence_pill_html,
+    _gating_score,
+    _scope_strips_html,
+    _source_list_html,
+    _turn_clock,
+)
+from ui.runtime import (
+    _PAGE_REFS,
+    _corpus,
+    _invoke_graph,
+    _record_request,
+    _session_id,
+)
+
+def _render_user_bubble(query: str, timestamp: str) -> None:
+    """Render one employee turn: its clock label above the question."""
+    st.markdown(
+        '<div class="araya-turn">'
+        f'<span class="araya-turn-label">{USER_TURN_LABEL} · '
+        f"{_turn_clock(timestamp)}</span>"
+        f'<div class="araya-bubble-user">{html.escape(query)}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_answer_card(record: dict) -> None:
+    """Render one grounded answer with its evidence meter and citations.
+
+    The card is a native container rather than a single markdown block so
+    the two head controls can be real widgets: "copy" is a popover holding
+    ``st.code``, whose own copy button reaches the clipboard without a
+    custom component, and "save" is a download button.
+    """
+    state: PipelineState = record["state"]
+    request_id = record["request_id"]
+    citations = state.get("valid_citations", [])
+    score = _gating_score(state)
+    with st.container(key=f"araya_answer_{request_id}"):
+        verdict, evidence, copy, save = st.columns(
+            [4, 3, 2, 2], vertical_alignment="center"
+        )
+        with verdict:
+            st.markdown(
+                '<span class="araya-chip araya-chip--ok">'
+                '<span class="material-symbols-outlined">verified</span>'
+                f"{ANSWERED_CHIP}</span>",
+                unsafe_allow_html=True,
+            )
+        with evidence:
+            if score is not None:
+                st.markdown(
+                    _evidence_pill_html(score), unsafe_allow_html=True
+                )
+        with copy:
+            with st.popover(
+                COPY_ANSWER_LABEL,
+                icon=":material/content_copy:",
+                use_container_width=True,
+            ):
+                st.code(
+                    state.get("answer", ""), language=None, wrap_lines=True
+                )
+        with save:
+            st.download_button(
+                DOWNLOAD_ANSWER_LABEL,
+                data=_answer_markdown(record),
+                file_name=f"{request_id}.md",
+                mime="text/markdown",
+                icon=":material/download:",
+                key=f"araya_save_{request_id}",
+                on_click="ignore",
+                use_container_width=True,
+            )
+        st.markdown(
+            '<div class="araya-card-body">'
+            f"{_answer_html(state)}"
+            '<div class="araya-sources">'
+            '<div class="araya-sources-head">'
+            f"{SOURCES_HEADER.format(count=len(citations))}</div>"
+            f"{_source_list_html(state)}"
+            f'<div class="araya-footnote">{SIMILARITY_FOOTNOTE} · '
+            f'<span class="araya-request-id">Request {request_id}</span>'
+            "</div></div></div>",
+            unsafe_allow_html=True,
+        )
+
+
+def _render_notice_card(
+    record: dict,
+    tone: str,
+    icon: str,
+    title: str,
+    text: str,
+    next_steps: bool,
+    note: str,
+) -> None:
+    """Render one degraded turn: what happened, and where to go next.
+
+    Args:
+        record: The session history entry being rendered.
+        tone: ``fallback`` or ``blocked``; selects the card's colour.
+        icon: Material Symbols glyph shown beside the title.
+        title: Card heading, in the employee's language.
+        text: The fixed response text from ``src.fallback``. The UI never
+            writes its own wording for a degraded route.
+        next_steps: Whether to offer the two starter questions. An
+            evidence fallback earns them because the corpus can answer
+            something nearby; the other cases do not.
+        note: Footnote shown when no ways forward are offered.
+    """
+    request_id = record["request_id"]
+    with st.container(key=f"araya_notice_{tone}_{request_id}"):
+        st.markdown(
+            f'<div class="araya-notice araya-notice--{tone}">'
+            '<span class="material-symbols-outlined araya-notice-icon">'
+            f"{icon}</span><div>"
+            f'<div class="araya-notice-title">{title}</div>'
+            f'<div class="araya-notice-text">{html.escape(text)}</div>'
+            "</div></div>",
+            unsafe_allow_html=True,
+        )
+        if not next_steps:
+            st.markdown(
+                f'<div class="araya-footnote">{note} · '
+                f'<span class="araya-request-id">Request {request_id}</span>'
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            return
+        columns = st.columns(len(NEXT_STEP_PROMPTS) + 1)
+        for index, (label, question) in enumerate(NEXT_STEP_PROMPTS):
+            with columns[index]:
+                if st.button(
+                    label,
+                    key=f"araya_next_{index}_{request_id}",
+                    help=question,
+                    use_container_width=True,
+                ):
+                    _ask(question)
+        with columns[-1]:
+            st.markdown(
+                f'<span class="araya-request-id">{request_id}</span>',
+                unsafe_allow_html=True,
+            )
+
+
+def _render_agent_card(record: dict) -> None:
+    """Render one agent response according to the route the graph chose."""
+    state: PipelineState = record["state"]
+    route = state.get("route")
+    fixed_text = response_text_for_state(
+        route,
+        state.get("guardrail_reason"),
+        state.get("fallback_reason"),
+        telemetry_logged=state.get("telemetry_logged", True),
+    )
+
+    if route == "blocked":
+        _render_notice_card(
+            record,
+            tone="blocked",
+            icon="gpp_bad",
+            title=BLOCKED_CHIP,
+            text=fixed_text or "",
+            next_steps=False,
+            note=AUDIT_ONLY_NOTE,
+        )
+        return
+
+    if route == "fallback":
+        # Asked of the shared selector rather than compared here: the
+        # notice card must describe the same failure the fixed text
+        # above already states, and a second copy of that boundary in
+        # the UI would drift from it.
+        service_unavailable = is_service_failure(
+            state.get("fallback_reason")
+        )
+        _render_notice_card(
+            record,
+            tone="fallback",
+            icon="cloud_off" if service_unavailable else "help_center",
+            title=(
+                SERVICE_UNAVAILABLE_CHIP
+                if service_unavailable
+                else FALLBACK_CHIP
+            ),
+            text=fixed_text or "",
+            # An unconfigured answer service is not a gap in the corpus,
+            # so pointing the employee at other topics would misdescribe
+            # the failure: the ways forward stay for evidence fallbacks.
+            next_steps=not service_unavailable,
+            note=AUDIT_ONLY_NOTE,
+        )
+        return
+
+    if route != "answered":
+        return
+
+    _render_answer_card(record)
+
+
+def _ask(query: str) -> None:
+    """Run one question through the pipeline and store its outcome.
+
+    Shared by the composer and the starter questions so that both enter
+    the graph by the same door; the view adds nothing to the query but
+    the surrounding whitespace it strips.
+    """
+    with st.spinner("กำลังค้นหาจากฐานความรู้..."):
+        state, latency = _invoke_graph(query)
+    _record_request(query, state, latency)
+    st.rerun()
+
+
+def _render_empty_state() -> None:
+    """Opening screen for a session that has not asked anything yet.
+
+    The first run used to be a blank page above a text box, which says
+    nothing about what the assistant knows or how it behaves when it does
+    not know. This screen answers both before the employee types: the
+    subject and the size of the corpus, four questions the corpus can
+    actually answer, and the three outcomes a question can have.
+    """
+    st.markdown(
+        f'<p class="araya-hero-title">{EMPTY_STATE_HEADLINE}</p>'
+        '<p class="araya-hero-sub">'
+        f"{EMPTY_STATE_SUBTITLE.format(count=len(_corpus()))}</p>",
+        unsafe_allow_html=True,
+    )
+    # Two per row, as in the mockup. Each button is one starter question,
+    # styled as a card so the whole card is the click target; its leading
+    # bold run is the department tag the stylesheet lifts out.
+    for row_start in range(0, len(SUGGESTED_QUESTIONS), 2):
+        pairs = SUGGESTED_QUESTIONS[row_start:row_start + 2]
+        for offset, (column, (tag, question)) in enumerate(
+            zip(st.columns(len(pairs)), pairs)
+        ):
+            with column:
+                if st.button(
+                    f"**{tag}**  \n{question}",
+                    key=f"araya_suggest_{row_start + offset}",
+                    use_container_width=True,
+                    wrap=True,
+                ):
+                    _ask(question)
+    st.markdown(_scope_strips_html(), unsafe_allow_html=True)
+
+
+def _render_employee_view() -> None:
+    """Chat-style employee flow: ask, then read a grounded, cited answer."""
+    st.markdown(_CHAT_LAYOUT_CSS, unsafe_allow_html=True)
+    history = st.session_state.get("history", [])
+    if not history:
+        _render_empty_state()
+    # Each turn states its own clock, so the transcript no longer opens
+    # with a single date divider that scrolls away after two questions.
+    for record in history:
+        _render_user_bubble(record["query"], record["timestamp"])
+        _render_agent_card(record)
+
+    # The composer enforces the same length ceiling the guardrail applies,
+    # so an over-length question is stopped at the keyboard instead of
+    # being sent and rejected.
+    query = st.chat_input(CHAT_PLACEHOLDER, max_chars=config.MAX_QUERY_CHARS)
+    if query and query.strip():
+        _ask(query.strip())
+
+
+def _render_chat_sidebar() -> None:
+    """Employee rail: brand, session reset, and the standing caveat.
+
+    Mockup rail entries without a real data source (a list of past
+    sessions, settings, support) stay omitted rather than being faked.
+    The console link lives in the top bar with the view switch, so the
+    rail holds one action and does not compete with it.
+    """
+    with st.sidebar:
+        st.markdown(_brand_html(), unsafe_allow_html=True)
+        if st.button(
+            NEW_SESSION_LABEL,
+            icon=":material/add:",
+            key="araya_new_session",
+            use_container_width=True,
+        ):
+            st.session_state.pop("history", None)
+            st.session_state.pop("session_id", None)
+            st.rerun()
+        st.markdown(
+            f'<div class="araya-rail-note">{VIEW_SEPARATION_NOTE}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _leave_for_console() -> None:
+    """Arm the console jump when the top-bar switch moves off the assistant.
+
+    The switch keeps its own widget state, so it is reset here, inside the
+    change callback, before the rerun reads it. Without the reset the
+    control would still say "console" on the way back and bounce the
+    employee straight out of the assistant again.
+    """
+    if st.session_state.get("araya_view_switch") == OPS_VIEW:
+        st.session_state["araya_view_switch"] = EMPLOYEE_VIEW
+        st.session_state["araya_goto_console"] = True
+
+
+def _render_chat_topbar() -> None:
+    """View switch, session identity, and help, as the mockup's app bar.
+
+    The switch is the assistant's only route to the console, replacing the
+    rail link so that both pages offer the same control in the same place.
+    The mockup's notification bell is omitted: this prototype has no event
+    stream behind it, and the language toggle is omitted because no
+    translated copy exists to switch to.
+    """
+    with st.container(key="araya_topbar"):
+        switch, identity, action = st.columns(
+            [3, 3, 1], vertical_alignment="center"
+        )
+        with switch:
+            # Seeded through session state rather than `default=`: the
+            # change callback writes the same key to send the control
+            # home, and Streamlit warns when a widget carries both.
+            st.session_state.setdefault("araya_view_switch", EMPLOYEE_VIEW)
+            st.segmented_control(
+                "View",
+                options=(EMPLOYEE_VIEW, OPS_VIEW),
+                format_func=VIEW_SWITCH_LABELS.get,
+                key="araya_view_switch",
+                on_change=_leave_for_console,
+                label_visibility="collapsed",
+            )
+        with identity:
+            st.markdown(
+                '<span class="araya-mono araya-session-id">'
+                '<span class="material-symbols-outlined">tag</span>'
+                f"Session {_session_id()}</span>",
+                unsafe_allow_html=True,
+            )
+        with action:
+            with st.popover(
+                "Help", icon=":material/help:", use_container_width=True
+            ):
+                st.markdown(HELP_TEXT)
+    # Navigating from inside the column would abandon the layout block
+    # half-built, so the armed jump is taken once the bar is complete.
+    if st.session_state.pop("araya_goto_console", False):
+        st.switch_page(_PAGE_REFS["console"])
+
+
+def _employee_page() -> None:
+    """Employee assistant: grounded answers, citations, safe messaging.
+
+    Operational telemetry (reason codes, scores, latency, key state) never
+    appears here; it belongs to the console page.
+    """
+    _render_chat_sidebar()
+    _render_chat_topbar()
+    _render_employee_view()
