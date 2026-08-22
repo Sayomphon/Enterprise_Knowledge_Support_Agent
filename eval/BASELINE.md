@@ -1388,10 +1388,17 @@ at its Phase 12 value, and it was run once, afterwards.
   `+1` unconditionally, while `safe_rewrite` returns `llm_not_configured`
   without ever building a client. A provider error or a timeout still counts
   one: there the call was made and failed.
-* **P1-9c — the two seams that could still escape `invoke`.** `screen_query` is
-  the first node and had no handler, and `validate_answer` was the only
-  deterministic stage without one. Both now degrade to `evidence_failure` with a
-  logged reason (invariant 9). The screen fails **closed**: `retrieve_original`
+* **P1-9c — every seam that could still escape `invoke`.** The plan named two;
+  auditing all eleven nodes for a handler found four. `screen_query` is the
+  first node and had none, `validate_answer` was the only deterministic stage
+  without one, `validate_rewrites` sat behind a seam that absorbs provider
+  errors but not validator faults, and the two terminal nodes could lose a
+  request to a writer fault the sink's own contract does not cover. The screen
+  and the validator degrade to `evidence_failure`, the rewrite stage to
+  `rewrite_failure` (invariant 8: a failed rewrite degrades to the original
+  query rather than breaking the request), and a lost telemetry write returns
+  `telemetry_logged=False`, so the employee is never told a question was
+  recorded when it was not. The screen fails **closed**: `retrieve_original`
   stands down when a reason code is already set, so an unscreened query reaches
   neither the index nor a provider.
 * **P1-9b — the UI seam.** `ui/runtime._invoke_graph` absorbs anything that
@@ -1419,7 +1426,7 @@ at its Phase 12 value, and it was run once, afterwards.
 ## Measured results
 
 ```text
-python -m unittest discover -s tests -v     Ran 579 tests, OK (skipped=5)
+python -m unittest discover -s tests -v     Ran 582 tests, OK (skipped=5)
                                             (545 before this round)
 
 python eval/run_eval.py --set guardrail   --strict   exit 0
@@ -1512,7 +1519,7 @@ P1.
   on GitHub — the repository has no remote — so no badge is claimed. What was
   verified instead is the thing CI exists to prove here: a clean Python 3.12
   virtualenv, built from `requirements.txt` alone in a fresh checkout with no
-  `.env`, installs cleanly, passes `pip check`, runs 579 tests OK, exits 0 on
+  `.env`, installs cleanly, passes `pip check`, runs 582 tests OK, exits 0 on
   all four gates and on a CLI query, and serves `/_stcore/health`. Audit item 7
   (reproducibility unverifiable, because that sandbox could not reach PyPI) is
   closed by measurement; only the automation around it is still unexercised.

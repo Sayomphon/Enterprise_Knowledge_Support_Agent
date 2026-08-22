@@ -1756,6 +1756,62 @@ class TestDeterministicStageFailures(unittest.TestCase):
         self.assertEqual(retriever.calls, [])
         self.assertNotIn("answer", state)
 
+    def test_rewrite_stage_failure_degrades_instead_of_escaping(
+        self,
+    ) -> None:
+        # The rewrite seam absorbs provider failures itself, but the
+        # deterministic validator behind it had no handler, so a crash
+        # there escaped ``invoke`` with no reason code. Invariant 8 says
+        # a failed rewrite degrades rather than breaking the request.
+        graph = build_graph(
+            retriever=StubRetriever(
+                [_documents(MEDIUM_SCORE), _documents(ALIAS_FAIL_SCORE)]
+            ),
+            log_path=self.log_path,
+            documents=_corpus(),
+            rewriter=lambda query, *, budget_seconds=None: (
+                [f"{query} ปรับคำ"],
+                None,
+            ),
+        )
+        with mock.patch(
+            "src.graph.validate_rewrites",
+            side_effect=RuntimeError("rewrite validator corrupted"),
+        ):
+            state = graph.invoke({"query": SLANG_QUERY})
+
+        self.assertEqual(state["route"], "fallback")
+        self.assertEqual(
+            state["fallback_reason"], ReasonCode.REWRITE_FAILURE.value
+        )
+        self.assertEqual(state["rewritten_queries"], [])
+        self.assertEqual(
+            self._log_records()[-1]["reason"],
+            ReasonCode.REWRITE_FAILURE.value,
+        )
+
+    def test_a_rewrite_seam_that_raises_still_counts_no_call(self) -> None:
+        # A seam that raises never reported whether it reached the
+        # provider, so the request is not billed for a call nobody can
+        # confirm -- the same rule the credential case established.
+        def exploding_rewriter(query, *, budget_seconds=None):
+            raise RuntimeError("rewriter stub exploded")
+
+        graph = build_graph(
+            retriever=StubRetriever(
+                [_documents(MEDIUM_SCORE), _documents(ALIAS_FAIL_SCORE)]
+            ),
+            log_path=self.log_path,
+            documents=_corpus(),
+            rewriter=exploding_rewriter,
+        )
+
+        state = graph.invoke({"query": SLANG_QUERY})
+
+        self.assertEqual(state["route"], "fallback")
+        self.assertEqual(state["llm_calls"], 0)
+        self.assertEqual(self._log_records()[-1]["llm_calls"], 0)
+
     def test_validator_failure_degrades_instead_of_escaping(self) -> None:
         # The validator is the last gate before the public answer, and
         # it was the one deterministic seam with no handler: a crash
@@ -1784,6 +1840,32 @@ class TestDeterministicStageFailures(unittest.TestCase):
             self._log_records()[-1]["reason"],
             ReasonCode.EVIDENCE_FAILURE.value,
         )
+
+    def test_a_terminal_node_survives_a_writer_that_raises(self) -> None:
+        # The two nodes that write telemetry are the last in their chain,
+        # so an exception there has nowhere left to degrade to -- it just
+        # escapes ``invoke``. The writer's own handler covers the errors a
+        # filesystem produces; this covers the ones a bug would.
+        for query, route in (
+            (INJECTION_QUERY, "blocked"),
+            (OUT_OF_DOMAIN_QUERY, "fallback"),
+        ):
+            with self.subTest(route=route):
+                graph = build_graph(
+                    retriever=StubRetriever([_documents(LOW_SCORE)]),
+                    log_path=self.log_path,
+                    documents=_corpus(),
+                )
+                with mock.patch(
+                    "src.graph.log_fallback_event",
+                    side_effect=RuntimeError("sink driver exploded"),
+                ):
+                    state = graph.invoke({"query": query})
+
+                self.assertEqual(state["route"], route)
+                # The employee must not be told the question was
+                # recorded when the write never happened.
+                self.assertFalse(state["telemetry_logged"])
 
     def test_non_string_query_is_refused_rather_than_raising(self) -> None:
         # screen_query is typed ``query: object`` so this boundary can

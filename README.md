@@ -83,7 +83,7 @@ python -m unittest discover -s tests
 
 ```text
 ----------------------------------------------------------------------
-Ran 579 tests in 2.869s
+Ran 582 tests in 2.987s
 
 OK (skipped=5)
 ```
@@ -111,7 +111,7 @@ in CI: it calls a real provider and costs money.
 Every one of those steps was executed against a **clean 3.12 virtualenv built
 from `requirements.txt` alone**, in a fresh checkout with no `.env`: install and
 `pip check` clean, `main.py --check` exit 0 with the credential reported
-missing, 579 tests OK, all four gates exit 0, a CLI query exit 0, and
+missing, 582 tests OK, all four gates exit 0, a CLI query exit 0, and
 `/_stcore/health` returning `ok`. That is the reproducibility claim the pinned
 requirements are supposed to carry, verified rather than asserted. The workflow
 itself has never run — this repository has no remote yet — so no badge is

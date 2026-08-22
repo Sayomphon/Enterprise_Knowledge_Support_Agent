@@ -339,6 +339,35 @@ def _degraded(node_name: str, exc: Exception, reason: ReasonCode) -> dict[str, o
     return {"fallback_reason": reason.value}
 
 
+def _write_event(**fields: object) -> bool:
+    """Append one telemetry event, surviving a writer that raises.
+
+    ``log_fallback_event`` already reports filesystem and serialization
+    failures as a result rather than an exception. This wrapper covers
+    what that contract does not: a fault inside the writer itself, or in
+    the arguments a node assembled for it. Both terminal nodes are last
+    in their chain, so an exception there has nowhere to degrade to and
+    simply escapes ``invoke`` -- and the presentation layer would then
+    have no state at all to describe the request with.
+
+    Args:
+        **fields: Keyword arguments forwarded to ``log_fallback_event``.
+
+    Returns:
+        Whether the event reached the sink. A False here means the same
+        thing to the employee as a failed append: the question was not
+        recorded, and the response text must not claim it was.
+    """
+    try:
+        return log_fallback_event(**fields).ok
+    except Exception as exc:
+        print(
+            f"telemetry: event lost after {type(exc).__name__}",
+            file=sys.stderr,
+        )
+        return False
+
+
 def load_screened_corpus() -> list[Document]:
     """Load the corpus through the ingestion screen the pipeline uses.
 
@@ -445,7 +474,7 @@ def build_graph(
 
     def refuse_node(state: PipelineState) -> dict[str, object]:
         """Log the blocked request; the refusal text itself is fixed."""
-        write = log_fallback_event(
+        logged = _write_event(
             query=state["query"],
             reason=state.get("guardrail_reason", ReasonCode.PROMPT_INJECTION),
             raw_retrieval_score=None,
@@ -456,7 +485,7 @@ def build_graph(
             llm_calls=state.get("llm_calls", 0),
             log_path=log_path,
         )
-        return {"telemetry_logged": write.ok}
+        return {"telemetry_logged": logged}
 
     def retrieve_original_node(state: PipelineState) -> dict[str, object]:
         """Retrieve with the original query and record the top-1 score."""
@@ -621,20 +650,42 @@ def build_graph(
                     ReasonCode.REQUEST_DEADLINE_EXCEEDED.value
                 ),
             }
-        candidates, failure_reason = rewrite(
-            state["query"], budget_seconds=budget
-        )
-        # An unconfigured credential is refused before a client is even
-        # built, so no provider call happened and the record must not
-        # claim one: llm_calls is what tells a rewrite that ran from one
-        # that was skipped (AGENTS.md section 8). A provider error or a
-        # timeout still counts one -- there the call was made and failed.
-        spent_calls = (
-            0 if failure_reason == ReasonCode.LLM_NOT_CONFIGURED.value else 1
-        )
-        validation = validate_rewrites(
-            state["query"], candidates, state.get("scope_topics", [])
-        )
+        spent_calls = 0
+        try:
+            candidates, failure_reason = rewrite(
+                state["query"], budget_seconds=budget
+            )
+            # An unconfigured credential is refused before a client is
+            # even built, so no provider call happened and the record
+            # must not claim one: llm_calls is what tells a rewrite that
+            # ran from one that was skipped (AGENTS.md section 8). A
+            # provider error or a timeout still counts one -- there the
+            # call was made and failed.
+            spent_calls = (
+                0
+                if failure_reason == ReasonCode.LLM_NOT_CONFIGURED.value
+                else 1
+            )
+            validation = validate_rewrites(
+                state["query"], candidates, state.get("scope_topics", [])
+            )
+        except Exception as exc:
+            # ``safe_rewrite`` absorbs provider failures on its own, so an
+            # exception reaching here is the deterministic validator, or a
+            # seam an operator injected. Invariant 8 says a failed rewrite
+            # degrades rather than breaking the request, and invariant 9
+            # says it must leave a reason code; with no accepted rewrite
+            # the router sends this to fallback, which is where a rewrite
+            # that produced nothing already goes. A seam that raised never
+            # said whether it reached the provider, so ``spent_calls``
+            # stays at whatever was confirmed before the failure.
+            return {
+                "route": "rewrite",
+                "rewritten_queries": [],
+                "rewrite_rejected": False,
+                "llm_calls": state.get("llm_calls", 0) + spent_calls,
+                **_degraded("rewrite_node", exc, ReasonCode.REWRITE_FAILURE),
+            }
         updates: dict[str, object] = {
             "route": "rewrite",
             "rewritten_queries": list(validation.accepted_queries),
@@ -816,7 +867,7 @@ def build_graph(
             reason = ReasonCode.REWRITE_LOW_RETRIEVAL_SCORE.value
         else:
             reason = ReasonCode.LOW_RETRIEVAL_SCORE.value
-        write = log_fallback_event(
+        logged = _write_event(
             query=state["query"],
             reason=reason,
             raw_retrieval_score=state.get("raw_retrieval_score"),
@@ -850,7 +901,7 @@ def build_graph(
             "route": "fallback",
             "fallback_reason": reason,
             "candidate_answer": None,
-            "telemetry_logged": write.ok,
+            "telemetry_logged": logged,
         }
 
     builder = StateGraph(PipelineState)
