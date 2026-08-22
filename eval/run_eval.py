@@ -7,6 +7,7 @@ Usage:
     python eval/run_eval.py --set contracts
     python eval/run_eval.py --set calibration --distribution
     python eval/run_eval.py --set calibration --ngram 2,4
+    python eval/run_eval.py --set calibration --title-weight 2
     python eval/run_eval.py --set guardrail --strict
 
 Without ``--strict`` this is a reporting command: it prints every metric
@@ -1697,6 +1698,13 @@ def main(argv: list[str] | None = None) -> int:
         help="character n-gram override for ablation runs",
     )
     parser.add_argument(
+        "--title-weight",
+        type=int,
+        default=None,
+        metavar="N",
+        help="repeat each document title N times in the index (ablation)",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="exit non-zero when any case contradicts its label",
@@ -1726,11 +1734,22 @@ def main(argv: list[str] | None = None) -> int:
 
     documents = load_documents()
     documents_by_id = {document.source_id: document for document in documents}
-    if args.ngram is None:
-        retriever = LocalTfidfRetriever(documents)
-    else:
-        retriever = LocalTfidfRetriever(documents, ngram_range=args.ngram)
-        print(f"[ablation] ngram_range={args.ngram}")
+    # Both index knobs are ablation-only overrides: the committed defaults
+    # live in the retriever, and a run that changes one says so in its own
+    # output, so a pasted result cannot be mistaken for the shipped index.
+    index_overrides = {}
+    if args.ngram is not None:
+        index_overrides["ngram_range"] = args.ngram
+    if args.title_weight is not None:
+        index_overrides["title_weight"] = args.title_weight
+    retriever = LocalTfidfRetriever(documents, **index_overrides)
+    if index_overrides:
+        print(
+            "[ablation] "
+            + " ".join(
+                f"{name}={value}" for name, value in index_overrides.items()
+            )
+        )
     failures = evaluate_retrieval(
         args.set_name, retriever, documents_by_id, args.distribution
     )

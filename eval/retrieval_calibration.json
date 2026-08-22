@@ -145,5 +145,33 @@
     "query": "ลาได้กี่วัน",
     "expected_route": "fallback",
     "expected_sources": []
+  },
+  {
+    "id": "cal_noisy_06",
+    "category": "noisy",
+    "query": "สลิปธนาคารใช้แทนใบเสร็จได้ไหม",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-002"]
+  },
+  {
+    "id": "cal_noisy_07",
+    "category": "noisy",
+    "query": "โอนเงินผ่านแอปแล้วแคปหน้าจอมาเบิกได้มั้ย",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-002"]
+  },
+  {
+    "id": "cal_normal_06",
+    "category": "normal",
+    "query": "e-receipt จากอีเมลใช้แทนใบเสร็จตัวจริงได้ไหม",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-002"]
+  },
+  {
+    "id": "cal_normal_07",
+    "category": "normal",
+    "query": "ไม่มีใบเสร็จแต่จ่ายไป 300 บาท เบิกยังไง",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-002"]
   }
 ]

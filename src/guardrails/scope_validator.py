@@ -57,6 +57,14 @@ SUPPORTED_TOPIC_ALIASES: dict[KnowledgeTopic, tuple[str, ...]] = {
         "ใบกำกับภาษี",
         "สลิปโอนเงิน",
         "แบบฟอร์มรับรองค่าใช้จ่าย",
+        # The two phrases FIN-002 itself opens with. They earn their place
+        # twice: an employee who asks about "financial evidence" without
+        # saying "receipt" resolves to this topic, and the deterministic
+        # expansion searches the document's own wording, which is what
+        # lifts a paraphrased receipt question over the answer threshold
+        # without any index or threshold change (2026-08-22 ablation).
+        "หลักฐานทางการเงิน",
+        "เอกสารประกอบการเบิก",
         "e-receipt",
         "receipt",
     ),

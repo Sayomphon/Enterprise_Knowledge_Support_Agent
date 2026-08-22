@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import unittest
 
+from src.query_expansion import alias_expansion_variants
 from src.guardrails.scope_validator import (
     SUPPORTED_TOPIC_ALIASES,
     UNSUPPORTED_TOPIC_ALIASES,
@@ -197,6 +198,51 @@ class TestNearDomainExpenseItems(unittest.TestCase):
 
         self.assertTrue(decision.supported)
         self.assertIn("reimbursement_process", decision.topics)
+
+
+class TestReceiptEvidenceAliases(unittest.TestCase):
+    """The document's own wording for evidence resolves to its topic.
+
+    ``FIN-002`` opens by requiring "financial evidence" and naming the
+    "documents supporting a claim"; a paraphrased receipt question that
+    never says the word "receipt" used to resolve to nothing but the
+    process topic, and the deterministic expansion then had no receipt
+    wording to search with. The pair below is the control: the addition
+    must not pull an unrelated document question into the topic.
+    """
+
+    def test_evidence_wording_resolves_the_receipt_topic(self) -> None:
+        for query in (
+            "หลักฐานทางการเงินที่ใช้เบิกได้มีอะไรบ้าง",
+            "ต้องแนบเอกสารประกอบการเบิกอะไรบ้าง",
+        ):
+            with self.subTest(query=query):
+                decision = validate_scope(query)
+
+                self.assertTrue(decision.supported)
+                self.assertIn("receipt_policy", decision.topics)
+
+    def test_a_payroll_document_request_is_still_unsupported(self) -> None:
+        # One word away and out of scope: the corpus has no payroll
+        # policy, and the unsupported catalog has to keep winning the
+        # tie-break against the new evidence aliases.
+        decision = validate_scope("ขอเอกสารรับรองเงินเดือนได้ที่ไหน")
+
+        self.assertFalse(decision.supported)
+        self.assertEqual(decision.reason, "unsupported_topic")
+
+    def test_the_new_aliases_reach_the_expansion_variants(self) -> None:
+        # The scope decision is only half of what these aliases are for:
+        # the medium band searches them, which is what lifts a
+        # paraphrased receipt question without touching a threshold.
+        variants = alias_expansion_variants(
+            "โอนเงินผ่านแอปแล้วแคปหน้าจอมาเบิกได้มั้ย",
+            ["receipt_policy"],
+        )
+
+        self.assertTrue(
+            any("หลักฐานทางการเงิน" in variant for variant in variants)
+        )
 
 
 class TestCatalogContract(unittest.TestCase):

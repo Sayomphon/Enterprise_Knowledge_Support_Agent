@@ -24,6 +24,7 @@ class LocalTfidfRetriever:
         self,
         documents: Sequence[Document],
         ngram_range: tuple[int, int] = (2, 5),
+        title_weight: int = 1,
     ) -> None:
         """Build the TF-IDF index exactly once over the supplied corpus.
 
@@ -34,13 +35,32 @@ class LocalTfidfRetriever:
                 never rebuilds it.
             ngram_range: Character n-gram span. Injectable so the
                 calibration ablation can sweep candidate configurations
-                without editing this module. The (2, 5) default won the
-                2026-08-20 ablation against (2, 4) and (3, 5): equal
-                Hit@3 (12/12) with the widest gap between out-of-domain
-                and answerable raw scores (see src/config.py).
+                without editing this module. See ``src/config.py`` for the
+                sweep that chose the default.
+            title_weight: How many times a document's title is repeated
+                in its searchable string. Titles carry the most
+                discriminative policy keywords in this corpus, so
+                repeating one raises the score of a short query that
+                names the topic without touching a threshold.
+
+                The default stays 1: the 2026-08-22 ablation over
+                {(2,4), (2,5), (3,5)} x {1, 2, 3} on the 25-case
+                calibration set found that weighting titles does lift
+                Coverage to 16/16, but that it also reorders an exact
+                policy question -- "how do I claim a taxi fare after
+                OT" ranks the chat transcript above FIN-001, because a
+                chat title is short and echoes the question. Ranking a
+                transcript over the policy it illustrates is a worse
+                outcome than the case it recovers. The (2,4) column
+                scored the same and pushed the strongest generic
+                out-of-domain query to 0.1029, above ``REWRITE_FLOOR``,
+                which the score itself should separate. The parameter is
+                kept because it is how the ablation was run and how the
+                next one will be; see eval/BASELINE.md for the table.
 
         Raises:
-            ValueError: If no active document remains to index.
+            ValueError: If no active document remains to index, or
+                ``title_weight`` is below one.
         """
         if not documents:
             raise ValueError(
@@ -61,9 +81,12 @@ class LocalTfidfRetriever:
             raise ValueError(
                 "LocalTfidfRetriever requires at least one active document"
             )
+        if title_weight < 1:
+            raise ValueError("title_weight must be at least 1")
         # Public read-only telemetry: observability surfaces report the
-        # active n-gram configuration from here instead of guessing.
+        # active index configuration from here instead of guessing.
         self.ngram_range = ngram_range
+        self.title_weight = title_weight
         # Character n-grams instead of word tokenisation: Thai has no
         # reliable whitespace word boundaries, so a word analyzer would
         # need a segmentation model and still break on informal spelling.
@@ -79,9 +102,14 @@ class LocalTfidfRetriever:
         )
         # Title and body share one searchable string because titles carry
         # the most discriminative policy keywords in this small corpus.
+        # Repeating the title is how weighting is expressed here: the
+        # vectorizer is fitted on text, so a field weight has to be a
+        # property of that text rather than of a separate matrix.
         self._matrix = self._vectorizer.fit_transform(
             [
-                f"{document.title}\n{document.content}"
+                "\n".join(
+                    [document.title] * title_weight + [document.content]
+                )
                 for document in self._documents
             ]
         )
