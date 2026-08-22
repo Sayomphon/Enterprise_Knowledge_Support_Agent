@@ -9,6 +9,7 @@ logs/*.jsonl.*
 
 # Local environments and tool caches.
 .venv/
+.sbom-venv/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -17,5 +18,8 @@ __pycache__/
 .claude/
 
 # Local scratch artefacts (screenshots, exports); never part of the deliverable.
+# The SBOM is a build output published by CI, not a reviewed source file: it
+# would otherwise churn on every dependency bump.
 tmp/
+sbom.json
 Enterprise_Knowledge_Support_Agent.md

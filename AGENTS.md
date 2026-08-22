@@ -270,8 +270,12 @@ Violating any of these is a defect, even if tests pass.
 ```bash
 # Setup (Python 3.11+)
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.lock
 cp .env.example .env      # then fill OPENAI_API_KEY locally
+
+# Regenerate the lock after editing a pin in requirements.txt (needs uv)
+uv pip compile requirements.txt --universal --generate-hashes \
+  --python-version 3.11 -o requirements.lock
 
 # Run (no API key needed for the guardrail and low-score routes)
 python main.py "ขั้นตอนการเบิกค่าแท็กซี่หลังทำ OT ต้องทำอย่างไร"
@@ -298,9 +302,16 @@ python eval/run_eval.py --set answers --live --runs 3
 ```
 
 Dependencies are **pinned** in `requirements.txt` from a clean virtualenv that
-passed the smoke test. Do not add a dependency without an explicit request; if
-one is genuinely required, state the reason, the size, and the alternative that
-was rejected.
+passed the smoke test, and **locked** in `requirements.lock`: the full
+transitive tree, every distribution carrying its `sha256`, resolved for the
+3.11 floor and marked so one file serves both supported versions and every
+platform. `requirements.txt` is what a human edits and reviews;
+`requirements.lock` is what CI and any reproducible install read, under
+`--require-hashes` so pip refuses a distribution whose bytes moved. Editing a
+pin without regenerating the lock is a defect `tests/test_requirements_lock.py`
+fails on. Do not add a dependency without an explicit request; if one is
+genuinely required, state the reason, the size, and the alternative that was
+rejected.
 
 ---
 
@@ -424,7 +435,7 @@ from external calls.
 | Path safety | The loader reads only from the configured corpus directory; resolve and verify paths, no traversal from user input. |
 | Logging hygiene | Log query text, reason code, scores, and top source IDs only. No API keys, no system prompts, no raw provider responses, no model metadata. |
 | Log privacy | The sink holds employee questions across sessions. It is never rendered in the employee view, and the console renders it only when `ENABLE_OPS_VIEW` is explicitly enabled. That flag is a demo switch, not authentication or RBAC, and must never be described as either. The file is created `0600` inside a `0700` directory, rolls over at `LOG_MAX_BYTES` keeping `LOG_BACKUP_COUNT` pages, and the query text is redacted at the writer for four identifier shapes: Thai national id, account number, phone, email. The two length rules are Unicode-aware, so an id typed in Thai or fullwidth digits is masked as well. Redaction is a bounded safeguard, not a PII classifier, and must be described as such -- amounts, day counts and document ids stay intact on purpose, because a record that cannot explain a retrieval is not worth keeping. |
-| Dependencies | Pinned versions, direct dependencies only, installed from PyPI. |
+| Dependencies | Pinned versions, direct dependencies only, installed from PyPI. `requirements.lock` fixes the transitive tree by `sha256` and is installed with `--require-hashes`; CI audits it against the advisory database, publishes a CycloneDX SBOM, and scans the full git history for committed secrets with a pinned, digest-verified scanner. An accepted advisory is recorded in the README with its reason, never silenced in the workflow. |
 | Honesty | The README must state plainly that regex screening is a prototype safeguard, not defence-in-depth, and that claim-level validation proves provenance, coverage and span presence — never factual entailment, since a span quoted out of its condition still passes. Block rates are reported with their case count, never as universal security. |
 
 ---

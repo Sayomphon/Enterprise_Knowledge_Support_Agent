@@ -2,9 +2,10 @@
 #
 # The point of this workflow is the one claim the repository could not
 # make on its own: that a clean environment, not this laptop, installs
-# the pinned dependencies and passes every deterministic gate. It runs
-# on two Python versions because AGENTS.md section 5 states 3.11+, and a
-# floor that is never exercised is a floor nobody is holding.
+# the locked dependency tree -- hash-verified, transitive packages and
+# all -- and passes every deterministic gate. It runs on two Python
+# versions because AGENTS.md section 5 states 3.11+, and a floor that is
+# never exercised is a floor nobody is holding.
 #
 # The live answer set is deliberately absent. It calls a real provider,
 # costs money and needs a credential, so it stays a manual step run once
@@ -33,10 +34,16 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install pinned dependencies
+      # --require-hashes is the reason the lock exists: it makes pip refuse
+      # any distribution whose bytes are not the ones resolved here, and it
+      # refuses the install outright if a single line lost its hash. The
+      # direct list stays readable in requirements.txt; the tree that is
+      # actually installed is the one tests/test_requirements_lock.py holds
+      # against it.
+      - name: Install locked dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt
+          pip install --no-cache-dir --require-hashes -r requirements.lock
 
       - name: Check the resolved dependency tree
         run: pip check
@@ -85,3 +92,70 @@ jobs:
       - name: Streamlit log
         if: always()
         run: cat /tmp/streamlit.log || true
+
+  # Supply-chain checks run once rather than per Python version: they read the
+  # lock and the git history, neither of which changes with the interpreter.
+  # Each of the three answers a different question -- what is in the tree, what
+  # is known to be wrong with it, and whether a credential ever reached the
+  # repository -- and only the last of them is allowed to be a surprise.
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      # A shallow checkout hides history, and history is exactly where a
+      # credential that was committed and then deleted still lives.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Pinned to a release and verified against its published digest, so the
+      # scanner cannot be swapped under us -- the same standard the lock holds
+      # the Python tree to. The scan reads every commit, not the checkout.
+      - name: Secret scan — full history
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl --fail --silent --show-error --location \
+            --output gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum --check --status
+          tar xzf gitleaks.tar.gz gitleaks
+          # --redact keeps a finding from printing the secret into a public log.
+          ./gitleaks git . --no-banner --redact
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The tooling is pinned for the same reason every other version here is:
+      # a scanner that changes under a green build is a scanner nobody read.
+      - name: Install supply-chain tooling
+        run: pip install --no-cache-dir pip-audit==2.10.1 cyclonedx-bom==7.3.1
+
+      # Audited from the lock rather than from an installed environment, so the
+      # report covers what this repository ships and not what the runner
+      # happened to bootstrap. Hashes make the resolution deterministic, which
+      # is why --disable-pip is safe here. A finding fails the job: accepting
+      # one is a deliberate act -- record the reason in the README and add
+      # --ignore-vuln <ID> here, never silence the step.
+      - name: Dependency audit — known advisories
+        run: pip-audit -r requirements.lock --disable-pip
+
+      # The SBOM is built from a real installation because that is where the
+      # licence metadata lives; the tooling stays outside that virtualenv so it
+      # cannot list itself as part of the product.
+      - name: Install the locked tree for the SBOM
+        run: |
+          python -m venv .sbom-venv
+          .sbom-venv/bin/pip install --upgrade pip
+          .sbom-venv/bin/pip install --no-cache-dir --require-hashes -r requirements.lock
+
+      - name: Build the SBOM
+        run: |
+          cyclonedx-py environment .sbom-venv/bin/python \
+            --of JSON --output-reproducible -o sbom.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.json

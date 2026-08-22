@@ -76,14 +76,27 @@ vector store, no model download, no Docker.
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.lock
 cp .env.example .env          # then fill OPENAI_API_KEY locally
 python -m unittest discover -s tests
 ```
 
+Two dependency files, one job each.
+[`requirements.txt`](requirements.txt) is the human-facing list — nine direct
+pins, reviewed by eye. [`requirements.lock`](requirements.lock) is what you
+install: the same nine plus every transitive package, each carrying its
+`sha256`, so `--require-hashes` makes pip refuse a distribution whose bytes
+moved since the tree was resolved. Markers split the two releases that differ
+between the supported Python versions, so one file serves 3.11 and 3.12 on any
+platform. Editing a pin means regenerating the lock
+(`uv pip compile requirements.txt --universal --generate-hashes
+--python-version 3.11 -o requirements.lock`), and
+[`tests/test_requirements_lock.py`](tests/test_requirements_lock.py) fails the
+suite if the two files drift apart.
+
 ```text
 ----------------------------------------------------------------------
-Ran 582 tests in 2.987s
+Ran 586 tests in 2.947s
 
 OK (skipped=5)
 ```
@@ -104,18 +117,24 @@ streamlit run app.py                        # assistant on /, audit console on /
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs exactly these
 commands plus the four offline gates on Python 3.11 and 3.12 for every push and
-pull request — install from the pins, `pip check`, the suite, each gate as its
-own step, a CLI query, and a Streamlit health check. The live answer set is not
-in CI: it calls a real provider and costs money.
+pull request — install from the lock under `--require-hashes`, `pip check`, the
+suite, each gate as its own step, a CLI query, and a Streamlit health check —
+then audits the locked tree for known advisories, publishes an SBOM, and scans
+the full history for secrets. The live answer set is not in CI: it calls a real
+provider and costs money.
 
-Every one of those steps was executed against a **clean 3.12 virtualenv built
-from `requirements.txt` alone**, in a fresh checkout with no `.env`: install and
-`pip check` clean, `main.py --check` exit 0 with the credential reported
-missing, 582 tests OK, all four gates exit 0, a CLI query exit 0, and
-`/_stcore/health` returning `ok`. That is the reproducibility claim the pinned
-requirements are supposed to carry, verified rather than asserted. The workflow
-itself has never run — this repository has no remote yet — so no badge is
-claimed here.
+Every one of those steps was executed against **clean virtualenvs built from
+`requirements.lock` alone**, on 3.11 and 3.12 both: install exit 0, `pip check`
+clean, `main.py --check` exit 0, 586 tests OK, all four gates exit 0, and a CLI
+query exit 0 — plus, on 3.12, `/_stcore/health` returning `ok`. The lock was
+then installed a second time into a fresh virtualenv on each version, and
+`pip freeze` came back identical to the first, line for line — the
+reproducibility claim a lock is supposed to carry, verified rather than
+asserted. Between the two versions the tree differs in exactly the two packages
+the markers name, `numpy` and `scipy`, because the releases that support 3.12
+do not support the 3.11 floor. The workflow has run green on GitHub Actions for
+the last pushed commit; no badge is claimed here because that run predates this
+lock.
 
 Windows PowerShell differs only in activate and copy
 (`.\.venv\Scripts\Activate.ps1`, `Copy-Item .env.example .env`); full usage is
@@ -623,6 +642,20 @@ by name in those tests.
   against the calibrated thresholds, axis clamping, citation numbering, the node
   trace. What no test covers is rendering itself: `st.*` calls, CSS, and layout
   are still verified by walking both pages by hand.
+* **The supply chain is pinned and checked, not trusted.**
+  `requirements.lock` pins 78 packages against 2,144 distribution digests, so
+  an install gets the reviewed bytes or fails; CI audits that tree against the
+  advisory database, publishes a CycloneDX SBOM, and scans the whole git
+  history with a digest-verified `gitleaks`. Measured on 2026-08-22: the locked
+  tree carries **no known advisory**, and 53 commits of history contain **no
+  secret**. What none of that proves is that an upstream package is
+  *trustworthy* — only that it has not changed since it was reviewed — and an
+  advisory nobody has published yet is invisible to an audit by definition. One
+  finding sits deliberately outside the lock: `setuptools 82.0.1`, which every
+  virtualenv bootstraps for itself, carries `PYSEC-2026-3447`, a flaw in how
+  `MANIFEST.in` exclusions are matched when building an `sdist`. Nothing here
+  builds an `sdist` and the package is absent from the locked tree, so it is
+  recorded rather than pinned around.
 * **The corpus is eight short mock documents** written for this exercise. Nothing
   here has met a real policy PDF, a real chat export, a document that contradicts
   another, or a version history.

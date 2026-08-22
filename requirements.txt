@@ -1,5 +1,7 @@
 # Direct dependencies only, pinned from a clean Python 3.11 virtualenv
-# (AGENTS.md section 5). Transitive packages resolve from these pins.
+# (AGENTS.md section 5). This file is the human-facing list: edit it here,
+# then regenerate requirements.lock, which pins the transitive tree with
+# hashes and is what CI and any reproducible install read.
 langgraph==1.2.11
 langchain-core==1.6.0
 langchain-openai==1.6.0
