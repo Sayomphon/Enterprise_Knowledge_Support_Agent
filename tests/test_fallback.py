@@ -13,6 +13,7 @@ from src.fallback import (
     SERVICE_UNAVAILABLE_TEXT,
     SERVICE_UNAVAILABLE_TEXT_UNLOGGED,
     ReasonCode,
+    is_service_failure,
     refusal_text_for,
     response_text_for_state,
 )
@@ -106,7 +107,45 @@ class TestLoggingHonesty(unittest.TestCase):
 
 
 class TestServiceUnavailableMapping(unittest.TestCase):
-    """A missing credential is a service state, not thin evidence."""
+    """A failed stage is a service state, not thin evidence.
+
+    The distinction is the point of the wording: an employee told that
+    no policy was found goes and asks HR about a rule the pipeline never
+    read, while an employee told the service is unavailable tries again.
+    """
+
+    #: Reasons naming a stage that could not run at all.
+    SERVICE_REASONS = (
+        ReasonCode.LLM_NOT_CONFIGURED,
+        ReasonCode.REPORTER_FAILURE,
+        ReasonCode.RETRIEVAL_FAILURE,
+        ReasonCode.EVIDENCE_FAILURE,
+        ReasonCode.REWRITE_FAILURE,
+        ReasonCode.REQUEST_DEADLINE_EXCEEDED,
+    )
+
+    #: Reasons naming a verdict the pipeline actually reached.
+    EVIDENCE_REASONS = (
+        ReasonCode.LOW_RETRIEVAL_SCORE,
+        ReasonCode.REWRITE_LOW_RETRIEVAL_SCORE,
+        ReasonCode.UNSUPPORTED_TOPIC,
+        ReasonCode.NO_AUTHORITATIVE_EVIDENCE,
+        ReasonCode.FABRICATED_CITATION,
+        ReasonCode.MISSING_CITATION,
+        ReasonCode.INVALID_ANSWER_STRUCTURE,
+        ReasonCode.INSUFFICIENT_REPORTER_EVIDENCE,
+        ReasonCode.UNSUPPORTED_NUMERIC_CLAIM,
+        ReasonCode.REWRITE_REJECTED,
+    )
+
+    #: Reasons the guardrail writes on the blocked route, which has its
+    #: own fixed texts and never reaches the fallback wording at all.
+    BLOCKED_REASONS = (
+        ReasonCode.PROMPT_INJECTION,
+        ReasonCode.EMPTY_QUERY,
+        ReasonCode.QUERY_TOO_LONG,
+        ReasonCode.INVALID_QUERY_TYPE,
+    )
 
     def test_llm_not_configured_selects_the_service_text(self) -> None:
         text = response_text_for_state(
@@ -138,20 +177,55 @@ class TestServiceUnavailableMapping(unittest.TestCase):
                 for secret_word in ("OPENAI", "API", "key", "sk-"):
                     self.assertNotIn(secret_word, text)
 
-    def test_every_other_reason_keeps_the_evidence_wording(self) -> None:
-        evidence_reasons = (
-            ReasonCode.LOW_RETRIEVAL_SCORE,
-            ReasonCode.UNSUPPORTED_TOPIC,
-            ReasonCode.NO_AUTHORITATIVE_EVIDENCE,
-            ReasonCode.FABRICATED_CITATION,
-            ReasonCode.REPORTER_FAILURE,
-        )
-        for reason in evidence_reasons:
+    def test_every_stage_failure_selects_the_service_text(self) -> None:
+        for reason in self.SERVICE_REASONS:
+            with self.subTest(reason=reason):
+                self.assertEqual(
+                    response_text_for_state("fallback", None, reason),
+                    SERVICE_UNAVAILABLE_TEXT,
+                )
+
+    def test_stage_failures_never_send_the_employee_to_hr(self) -> None:
+        # The evidence text ends by naming HR/Finance. A provider outage
+        # must not, because there is no policy question to ask them.
+        for reason in self.SERVICE_REASONS:
+            with self.subTest(reason=reason):
+                text = response_text_for_state("fallback", None, reason)
+                self.assertNotIn("HR/Finance", text)
+
+    def test_every_evidence_reason_keeps_the_evidence_wording(self) -> None:
+        for reason in self.EVIDENCE_REASONS:
             with self.subTest(reason=reason):
                 self.assertEqual(
                     response_text_for_state("fallback", None, reason),
                     FALLBACK_TEXT,
                 )
+
+    def test_is_service_failure_agrees_with_the_selected_text(self) -> None:
+        # The helper is what the Streamlit notice card asks, so a card
+        # that shows the outage icon and a body about missing evidence
+        # would be this assertion failing rather than a UI review.
+        for reason in self.SERVICE_REASONS + self.EVIDENCE_REASONS:
+            with self.subTest(reason=reason):
+                text = response_text_for_state("fallback", None, reason)
+                self.assertEqual(
+                    is_service_failure(reason),
+                    text == SERVICE_UNAVAILABLE_TEXT,
+                )
+
+    def test_no_reason_code_is_left_unclassified(self) -> None:
+        # Guards the guard: a reason code added later must be sorted
+        # into a wording deliberately, not inherit the evidence text by
+        # being forgotten here.
+        classified = set(self.SERVICE_REASONS) | set(
+            self.EVIDENCE_REASONS
+        ) | set(self.BLOCKED_REASONS)
+
+        self.assertEqual(classified, set(ReasonCode))
+
+    def test_an_unknown_reason_is_not_treated_as_an_outage(self) -> None:
+        self.assertFalse(is_service_failure(None))
+        self.assertFalse(is_service_failure("some_future_reason"))
 
 
 class TestReasonCodeLiterals(unittest.TestCase):

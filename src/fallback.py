@@ -107,6 +107,45 @@ SERVICE_UNAVAILABLE_TEXT_UNLOGGED = (
     f"{_SERVICE_UNAVAILABLE_BODY}\n{_LOG_UNAVAILABLE_NOTICE}"
 )
 
+# Reason codes that name a stage which FAILED rather than an evidence
+# verdict it reached. A missing credential was the first one recognised
+# here; a provider error, a crashed index and a crashed evidence stage
+# are the same kind of fact about the service, and telling an employee
+# that a policy could not be found is false when no policy was ever
+# consulted. ``rewrite_rejected`` is deliberately absent: there the
+# rewriter worked and the deterministic validator refused its output,
+# which is the pipeline deciding rather than failing.
+_SERVICE_FAILURE_REASONS = frozenset(
+    {
+        ReasonCode.LLM_NOT_CONFIGURED.value,
+        ReasonCode.REPORTER_FAILURE.value,
+        ReasonCode.RETRIEVAL_FAILURE.value,
+        ReasonCode.EVIDENCE_FAILURE.value,
+        ReasonCode.REWRITE_FAILURE.value,
+        ReasonCode.REQUEST_DEADLINE_EXCEEDED.value,
+    }
+)
+
+
+def is_service_failure(reason: str | None) -> bool:
+    """Report whether a fallback reason describes a broken stage.
+
+    The presentation layers ask this instead of comparing against one
+    reason code each, so the boundary between "the corpus had no answer"
+    and "a stage could not run" is defined once, beside the texts it
+    selects.
+
+    Args:
+        reason: Reason code recorded for a degraded request, or ``None``
+            when the request did not degrade.
+
+    Returns:
+        True when the request degraded because a stage failed rather
+        than because its evidence was found wanting.
+    """
+    return reason in _SERVICE_FAILURE_REASONS
+
+
 def refusal_text_for(reason: str) -> str:
     """Select the fixed blocked-response text for a guardrail reason.
 
@@ -138,10 +177,11 @@ def response_text_for_state(
         route: Final ``route`` value from the pipeline state.
         guardrail_reason: Guardrail reason code for blocked requests.
         fallback_reason: Reason code recorded for a degraded request.
-            Only ``llm_not_configured`` changes the wording: every other
-            reason is an evidence outcome the employee cannot act on
-            differently, and naming them would turn internal routing into
-            user-facing noise.
+            It selects between two bodies and nothing finer: a service
+            state (``_SERVICE_FAILURE_REASONS``) tells the employee to
+            try again, and every evidence outcome shares one text,
+            because naming the individual verdicts would turn internal
+            routing into user-facing noise the employee cannot act on.
         telemetry_logged: Whether this request's event reached the JSONL
             sink. ``False`` selects the wording that does not claim the
             question was recorded. The graph sets the flag on every route
@@ -158,7 +198,7 @@ def response_text_for_state(
         return refusal_text_for(guardrail_reason or "")
     if route != "fallback":
         return None
-    if fallback_reason == ReasonCode.LLM_NOT_CONFIGURED:
+    if is_service_failure(fallback_reason):
         return (
             SERVICE_UNAVAILABLE_TEXT
             if telemetry_logged
