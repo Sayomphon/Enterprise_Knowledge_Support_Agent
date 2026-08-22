@@ -149,9 +149,33 @@ class TestFixtureSchemaValidation(unittest.TestCase):
             self._load([_raw_case(), _raw_case()])
 
     def test_shipped_fixtures_satisfy_their_own_schema(self) -> None:
-        for set_name in ("calibration", "heldout", "near_domain"):
+        for set_name in ("calibration", "heldout", "heldout_v2", "near_domain"):
             with self.subTest(set_name=set_name):
                 self.assertTrue(load_retrieval_cases(set_name))
+
+    def test_the_second_held_out_split_mirrors_the_first(self) -> None:
+        # A replacement reporting set is only comparable to the one it
+        # replaces if it is built the same way, so the category mix is
+        # asserted rather than described in a commit message
+        # (remediation plan P1-7).
+        def mix(set_name: str) -> dict[str, int]:
+            counts: dict[str, int] = {}
+            for case in load_retrieval_cases(set_name):
+                counts[case.category] = counts.get(case.category, 0) + 1
+            return counts
+
+        self.assertEqual(mix("heldout_v2"), mix("heldout"))
+
+    def test_no_query_is_shared_between_the_splits(self) -> None:
+        # Reading a tuning query back out of a held-out set would report
+        # calibration as generalisation (AGENTS.md section 10).
+        held_out = {case.query for case in load_retrieval_cases("heldout_v2")}
+        for other in ("heldout", "calibration", "near_domain"):
+            with self.subTest(other=other):
+                self.assertFalse(
+                    held_out
+                    & {case.query for case in load_retrieval_cases(other)}
+                )
 
     def test_the_near_domain_set_keeps_its_benign_control(self) -> None:
         # A hard-negative set with no benign half can be passed by

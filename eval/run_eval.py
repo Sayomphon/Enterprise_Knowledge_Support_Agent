@@ -3,6 +3,7 @@
 Usage:
     python eval/run_eval.py --set calibration
     python eval/run_eval.py --set heldout
+    python eval/run_eval.py --set heldout_v2
     python eval/run_eval.py --set guardrail
     python eval/run_eval.py --set contracts
     python eval/run_eval.py --set calibration --distribution
@@ -201,6 +202,14 @@ _MIN_GUARDRAIL_CASES_PER_TYPE = 12
 RETRIEVAL_SETS = {
     "calibration": "retrieval_calibration.json",
     "heldout": "retrieval_heldout.json",
+    # The second held-out split, written after the first one had been
+    # read during the Task 1 audit. A reporting set that has been looked
+    # at is a regression fixture, not generalisation evidence, so this
+    # one was authored before any threshold work in the same round and
+    # is run once (AGENTS.md section 10; remediation plan P1-7). Same
+    # category mix as the original: 4 normal, 3 noisy, 3 out-of-domain,
+    # 4 in-domain unsupported.
+    "heldout_v2": "retrieval_heldout_v2.json",
     # Near-domain hard negatives and the benign questions they are one
     # word away from. It is a SEPARATE file rather than more calibration
     # cases so the scope catalog can be extended and re-measured without

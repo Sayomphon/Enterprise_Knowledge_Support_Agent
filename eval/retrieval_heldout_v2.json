@@ -1,0 +1,100 @@
+[
+  {
+    "id": "hv2_normal_01",
+    "category": "normal",
+    "query": "รายการเบิกเกิน 5,000 บาท ต้องผ่านการอนุมัติเพิ่มอีกกี่ลำดับ",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-001"]
+  },
+  {
+    "id": "hv2_normal_02",
+    "category": "normal",
+    "query": "ต้องจองวันทำงานจากที่บ้านล่วงหน้ากี่วันทำการ",
+    "expected_route": "answered",
+    "expected_sources": ["HR-003"]
+  },
+  {
+    "id": "hv2_normal_03",
+    "category": "normal",
+    "query": "ลาป่วยแล้วต้องบันทึกใน HR Portal ภายในกี่วันหลังกลับมาทำงาน",
+    "expected_route": "answered",
+    "expected_sources": ["HR-002"]
+  },
+  {
+    "id": "hv2_normal_04",
+    "category": "normal",
+    "query": "ลาพักร้อนติดต่อกันเกิน 5 วันทำการต้องแจ้งล่วงหน้านานเท่าไหร่",
+    "expected_route": "answered",
+    "expected_sources": ["HR-001", "CHAT-002"]
+  },
+  {
+    "id": "hv2_noisy_01",
+    "category": "noisy",
+    "query": "อนุมัติแล้วเงินคืนเข้าบัญชีกี่วันอะ",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-001", "CHAT-001"]
+  },
+  {
+    "id": "hv2_noisy_02",
+    "category": "noisy",
+    "query": "ประชุมกับลูกค้าตอน wfh ต้องเปิดกล้องมั้ย",
+    "expected_route": "answered",
+    "expected_sources": ["HR-003"]
+  },
+  {
+    "id": "hv2_noisy_03",
+    "category": "noisy",
+    "query": "ใบกำกับภาษีเต็มรูปแบบต้องใช้ตอนไหนอะ",
+    "expected_route": "answered",
+    "expected_sources": ["FIN-002"]
+  },
+  {
+    "id": "hv2_ood_01",
+    "category": "ood",
+    "query": "แนะนำที่เที่ยวช่วงสงกรานต์ให้หน่อย",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "hv2_ood_02",
+    "category": "ood",
+    "query": "รถไฟฟ้าสายสีม่วงปิดให้บริการกี่โมง",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "hv2_ood_03",
+    "category": "ood",
+    "query": "ติดตั้ง Python บนเครื่องใหม่ทำอย่างไร",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "hv2_unsupported_01",
+    "category": "unsupported",
+    "query": "ลาไปงานศพญาติใช้สิทธิ์อะไรได้บ้าง",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "hv2_unsupported_02",
+    "category": "unsupported",
+    "query": "กองทุนสำรองเลี้ยงชีพบริษัทสมทบให้กี่เปอร์เซ็นต์",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "hv2_unsupported_03",
+    "category": "unsupported",
+    "query": "พนักงานลาออกต้องแจ้งล่วงหน้ากี่วัน",
+    "expected_route": "fallback",
+    "expected_sources": []
+  },
+  {
+    "id": "hv2_unsupported_04",
+    "category": "unsupported",
+    "query": "ค่าตรวจสุขภาพประจำปีเบิกกับบริษัทได้ไหม",
+    "expected_route": "fallback",
+    "expected_sources": []
+  }
+]

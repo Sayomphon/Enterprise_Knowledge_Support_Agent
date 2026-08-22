@@ -510,6 +510,53 @@ class TestGraphRoutes(unittest.TestCase):
         self.assertIsNone(records[0]["expanded_retrieval_score"])
         self.assertEqual(records[0]["top_sources"], ["FIN-001", "CHAT-001"])
 
+    def test_a_search_that_returns_nothing_falls_back_and_is_logged(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # An index that matches nothing is not the same event as one that
+        # crashed: there is no exception, no candidate and no score, and
+        # every router downstream has to read those absent keys. It was
+        # only ever probed by hand (remediation plan P1-7).
+        graph = self._graph([[]])
+
+        state: PipelineState = graph.invoke({"query": OUT_OF_DOMAIN_QUERY})
+
+        self.assertEqual(state["route"], "fallback")
+        self.assertEqual(state["fallback_reason"], "low_retrieval_score")
+        self.assertEqual(state["raw_retrieval_score"], 0.0)
+        self.assertEqual(rewriter_seam.call_count, 0)
+        self.assertEqual(reporter_seam.call_count, 0)
+        records = self._log_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["top_sources"], [])
+
+    def test_an_english_question_reaches_a_validated_english_answer(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # The end-to-end answer routes were all Thai, so nothing proved
+        # that an English question survives scope resolution, evidence
+        # selection and the answer contract together (remediation plan
+        # P1-7). It is the same route the contamination test enters, run
+        # one stage further: to the rendered answer.
+        self._set_reporter(reporter_seam, ANNUAL_LEAVE_CANDIDATE)
+        graph = self._graph(
+            [[_annual_leave_policy(HIGH_SCORE), _sick_leave_policy(HIGH_SCORE)]],
+            documents=_leave_corpus(),
+        )
+
+        state: PipelineState = graph.invoke(
+            {"query": ENGLISH_ANNUAL_LEAVE_QUERY}
+        )
+
+        self.assertEqual(state["route"], "answered")
+        self.assertEqual(state["valid_citations"], ["HR-001"])
+        self.assertEqual(
+            state["answer"], f"{ANNUAL_LEAVE_CLAIM_TEXT} [HR-001]"
+        )
+        # The sick-leave policy was retrieved and must not be cited.
+        self.assertNotIn("HR-002", state["answer"])
+        self.assertEqual(self._log_records(), [])
+
     def test_route_3_high_score_answers_with_one_reporter_call(
         self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
     ) -> None:

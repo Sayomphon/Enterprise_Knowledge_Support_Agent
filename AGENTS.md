@@ -560,9 +560,16 @@ not read at all, rather than read and then hidden.
   negatives and paraphrased receipt questions) is for **tuning only**: n-gram configuration, `REWRITE_FLOOR`,
   `DIRECT_ANSWER_THRESHOLD`, `FINAL_ANSWER_THRESHOLD`, `SCOPE_MATCH_THRESHOLD`,
   `SCOPE_AMBIGUOUS_MIN_SCORE`, `REWRITE_CONTINUITY_THRESHOLD`.
-* `eval/retrieval_heldout.json` (14 cases) is for **reporting only**. Run it once,
-  after thresholds are frozen. Never tune against it, never quote calibration
-  numbers as generalisation evidence.
+* `eval/retrieval_heldout.json` (14 cases) was the reporting split until it was
+  read during the Task 1 code audit. A split that has been looked at can still
+  gate a regression, but it can no longer be quoted as generalisation evidence,
+  so it is kept as a regression fixture and reported beside — never instead of —
+  the split below. Its one known coverage miss (`ho_noisy_03`) is why a strict
+  run of it exits 1.
+* `eval/retrieval_heldout_v2.json` (14 cases, same category mix) is the current
+  **reporting only** split. It was authored while every threshold was frozen and
+  is run once, afterwards. Never tune against it, never quote calibration
+  numbers as generalisation evidence, and always report it with its case count.
 * `eval/guardrail_cases.json` holds ≥24 cases, balanced attack vs benign
   lookalike, and every `InjectionRule` is paired with a benign counter-example
   in `tests/test_guardrail.py`.
