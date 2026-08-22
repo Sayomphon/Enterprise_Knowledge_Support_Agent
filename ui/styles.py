@@ -336,6 +336,30 @@ details[open] > summary .araya-chevron { transform: rotate(180deg); }
 .st-key-araya_new_session [data-testid="stIconMaterial"] {
     color: #0052CC; font-size: 18px;
 }
+/* The rail's session list. Each entry is a button so the whole row is the
+   target, but it reads as a list item: no fill until it is the session
+   being read, and the question sits above its clock and count. */
+.araya-rail-label {
+    margin: 18px 4px 6px; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase; color: #8e909c;
+}
+[class*="st-key-araya_session_"] [data-testid^="stBaseButton-"] {
+    background: transparent; border: 1px solid transparent;
+    border-radius: 9px; padding: 8px 10px; margin-bottom: 2px;
+}
+[class*="st-key-araya_session_"] [data-testid^="stBaseButton-"]:hover {
+    background: #F1F2F5;
+}
+[class*="st-key-araya_session_"] [data-testid="stBaseButton-primary"] {
+    background: #EEF2FF; border-color: #DDE4FF;
+}
+[class*="st-key-araya_session_"] [data-testid="stMarkdownContainer"] p {
+    font-size: 13px; line-height: 20px; color: #191c1e; margin: 0;
+    white-space: normal; text-align: left;
+}
+[class*="st-key-araya_session_"] [data-testid="stMarkdownContainer"] code {
+    font-size: 11px; color: #8e909c; background: transparent; padding: 0;
+}
 /* The rail's standing caveat belongs at the foot of the rail, under its own
    rule, not wedged between the actions. Streamlit stacks sidebar blocks in
    stSidebarUserContent, so the column has to own the full height before the
@@ -357,8 +381,85 @@ details[open] > summary .araya-chevron { transform: rotate(180deg); }
 /* Segmented control as the mockup's pill switch. Streamlit renders it as a
    button group; only the group wrapper is a stable hook, so the tray is
    styled here and the selected item keeps the widget's own affordance. */
-.st-key-araya_view_switch [data-testid="stButtonGroup"] {
+.st-key-araya_view_switch [data-testid="stButtonGroup"],
+.st-key-araya_console_switch [data-testid="stButtonGroup"] {
     background: #F1F2F5; border-radius: 9999px; padding: 3px; gap: 2px;
+    /* The tray must never be what overflows: it wraps with its own group
+       and each pill keeps its label on one line, so a narrow column
+       produces two stacked pills instead of two pills sitting on top of
+       the control beside them. */
+    flex-wrap: wrap; width: fit-content; max-width: 100%;
+}
+.st-key-araya_view_switch [data-testid="stButtonGroup"] button,
+.st-key-araya_console_switch [data-testid="stButtonGroup"] button {
+    white-space: nowrap;
+}
+/* Both app bars lay their controls out with st.columns, and a Streamlit
+   column is `flex: 1 1 <percent>` with min-width auto -- it shrinks past its
+   content rather than wrapping. The switch column's share is 27%, which is
+   less than its two pills need even on a 1280px window (259px against 275px),
+   so the pills wrapped inside their tray at every width. The floor below is
+   what the two pills actually measure, and the columns wrap to a second row
+   once the bar cannot seat them all. */
+.st-key-araya_topbar [data-testid="stColumn"],
+.st-key-araya_console_header [data-testid="stColumn"] {
+    /* Sized from their contents rather than from a percentage of the whole
+       row: a percentage basis plus a control with a floor adds up to more
+       than the row, and the surplus pushed one control onto a line of its
+       own where it then stretched across the page. Nothing grows here
+       except the field in the middle. */
+    flex: 0 0 auto; min-width: 150px;
+}
+.st-key-araya_topbar [data-testid="stColumn"]:first-child,
+.st-key-araya_console_header [data-testid="stColumn"]:first-child {
+    flex: 0 0 300px; min-width: 300px;
+}
+/* Second column -- the console's search, the assistant's session id -- is
+   the elastic one, so the bar breathes without the buttons moving. */
+.st-key-araya_topbar [data-testid="stColumn"]:nth-child(2),
+.st-key-araya_console_header [data-testid="stColumn"]:nth-child(2) {
+    flex: 1 1 200px; min-width: 180px;
+}
+@media (max-width: 1100px) {
+    /* Once the bar wraps, the session id is no longer opposite the switch,
+       so right-aligning it would leave it floating mid-row. */
+    .st-key-araya_topbar .araya-session-id { justify-content: flex-start; }
+}
+/* Phone width: the switch takes the full row and splits it, because a
+   fit-content tray leaves the two pills too small a target. */
+@media (max-width: 640px) {
+    /* The floors above are desktop measures; on a phone every control
+       takes the full row instead. The selectors mirror the ones they
+       override, because a plain column rule would lose to them. */
+    .st-key-araya_topbar [data-testid="stColumn"],
+    .st-key-araya_console_header [data-testid="stColumn"],
+    .st-key-araya_topbar [data-testid="stColumn"]:first-child,
+    .st-key-araya_console_header [data-testid="stColumn"]:first-child,
+    .st-key-araya_topbar [data-testid="stColumn"]:nth-child(2),
+    .st-key-araya_console_header [data-testid="stColumn"]:nth-child(2) {
+        flex: 1 1 100%; min-width: 0;
+    }
+    .st-key-araya_view_switch [data-testid="stButtonGroup"],
+    .st-key-araya_console_switch [data-testid="stButtonGroup"] {
+        width: 100%;
+    }
+    .st-key-araya_view_switch [data-testid="stButtonGroup"] button,
+    .st-key-araya_console_switch [data-testid="stButtonGroup"] button {
+        flex: 1 1 50%;
+    }
+}
+/* The rails are pinned to a fixed width for the desktop measure. Streamlit
+   turns the rail into an overlay on a narrow viewport, and a 240-260px
+   floor then covers most of a phone screen, so the pin is relaxed to a
+   share of the viewport rather than dropped. */
+@media (max-width: 768px) {
+    /* The attribute is repeated to outweigh the page stylesheets, which
+       pin their own rail width with !important and are injected after
+       this one; specificity is the only lever left once both sides are
+       important. */
+    [data-testid="stSidebar"][data-testid="stSidebar"] {
+        width: min(260px, 84vw) !important; min-width: 0 !important;
+    }
 }
 
 /* Opening screen. The type scale is the reading scale of an answer, not a
@@ -705,15 +806,62 @@ _CONSOLE_LAYOUT_CSS = """
 
 /* Evaluation: one row per metric, bar and fraction side by side, so a
    4/4 and a 1/2 cannot be skimmed as the same result. */
+/* Recorded run: one line per command the baseline says was executed, with
+   the outcome it recorded. The colour comes from that text, never from a
+   run this page performed -- the console evaluates nothing. */
+.araya-run {
+    display: flex; align-items: center; gap: 12px; padding: 8px 0;
+    border-bottom: 1px solid #F0F1F4;
+}
+.araya-run:last-child { border-bottom: none; }
+.araya-run-cmd {
+    flex: 1; min-width: 0; font-size: 12.5px; color: #42526E;
+    overflow-wrap: anywhere;
+}
+.araya-run-result {
+    flex: none; font-size: 12px; font-weight: 600; border-radius: 999px;
+    padding: 3px 10px; white-space: nowrap;
+}
+.araya-run-result--ok { background: #E3F5EC; color: #00714b; }
+.araya-run-result--fail { background: #FCE9E6; color: #B3261E; }
+.araya-run-result--neutral { background: #F1F2F5; color: #5A5D6B; }
+/* The baseline file is a long report with page-sized headings of its own.
+   Inside the reader block they are scaled to the console's type ramp, so
+   opening it no longer pushes every panel off the screen. */
+.st-key-araya_baseline_doc { border: 1px solid #E4E6EB; border-radius: 12px;
+    background: #FFFFFF; padding: 4px 18px;
+}
+.st-key-araya_baseline_doc h1 { font-size: 19px; line-height: 30px; }
+.st-key-araya_baseline_doc h2 { font-size: 16px; line-height: 26px; }
+.st-key-araya_baseline_doc h3 { font-size: 14px; line-height: 24px; }
+.st-key-araya_baseline_doc p,
+.st-key-araya_baseline_doc li,
+.st-key-araya_baseline_doc td,
+.st-key-araya_baseline_doc th {
+    font-size: 13px; line-height: 22px;
+}
 .araya-metric {
     display: flex; align-items: center; gap: 12px; padding: 9px 0;
     border-bottom: 1px solid #F0F1F4;
+    /* Two panels sit side by side, so a metric row can be as narrow as
+       ~215px. With a fixed bar and value the name was left a few pixels
+       and broke one letter per line; wrapping the row keeps the name
+       readable and drops the bar underneath it instead. */
+    flex-wrap: wrap;
 }
 .araya-metric:last-child { border-bottom: none; }
-.araya-metric-name { flex: 1; min-width: 0; font-size: 14px; color: #42526E; }
+.araya-metric-name {
+    flex: 1 1 150px; min-width: 120px; font-size: 14px; color: #42526E;
+}
+/* A metric can carry a remark -- a second rate the file states in the same
+   cell. It reads as a second line of the name, so the row keeps its three
+   columns and the name is never squeezed into a column of single letters. */
+.araya-metric-remark {
+    display: block; font-size: 11.5px; line-height: 18px; color: #8e909c;
+}
 .araya-metric-bar {
-    width: 120px; flex: 0 0 120px; height: 6px; border-radius: 9999px;
-    background: #EDEEF0; overflow: hidden;
+    flex: 1 1 72px; max-width: 120px; min-width: 48px; height: 6px;
+    border-radius: 9999px; background: #EDEEF0; overflow: hidden;
 }
 .araya-metric-fill { display: block; height: 6px; }
 .araya-metric-value {
@@ -745,15 +893,35 @@ _CONSOLE_DARK_CSS = """
     color: #E6E8EC;
 }
 .araya-panel-meta, .araya-panel-note, .araya-stat-label, .araya-stat-note,
-.araya-triage-meta, .araya-axis-labels, .araya-trace-detail {
+.araya-triage-meta, .araya-axis-labels, .araya-trace-detail,
+.araya-metric-remark {
     color: #7B8494;
 }
 .araya-stat, .araya-panel {
     background: #161A21; border-color: #262C36;
 }
 .araya-stat-track, .araya-metric-bar { background: #222835; }
-.araya-triage, .araya-metric, .araya-trace-row {
+.araya-triage, .araya-metric, .araya-trace-row, .araya-run {
     border-color: #1F2530;
+}
+.araya-run-cmd { color: #98A2B3; }
+/* The outcome chips carry their own light-theme fills, which turn into
+   pale blocks on the dark sheet; these are the same two verdicts read
+   against the console's dark ground. */
+/* Prefixed with the page container: the blanket text colour at the top of
+   this sheet is more specific than a bare class, and would otherwise grey
+   out the one colour these chips exist to carry. */
+[data-testid="stMain"] .araya-run-result--ok {
+    background: #10281F; color: #5FC79B;
+}
+[data-testid="stMain"] .araya-run-result--fail {
+    background: #2A1614; color: #F1938C;
+}
+[data-testid="stMain"] .araya-run-result--neutral {
+    background: #222835; color: #98A2B3;
+}
+.st-key-araya_baseline_doc {
+    background: #161A21; border-color: #262C36;
 }
 .araya-trace-node, .araya-triage-query { color: #C3C9D4; }
 table.araya-table { background: #161A21; border-color: #262C36; }

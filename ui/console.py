@@ -30,17 +30,31 @@ from src.schemas import (
 )
 
 from ui.labels import (
+    BASELINE_READER_LABEL,
+    BASELINE_RUNS_NOTE,
+    BASELINE_RUNS_TITLE,
+    BASELINE_UNPARSED,
+    BASELINE_UNREADABLE,
     CALIBRATION_BADGE,
     CONSOLE_SEARCH_PLACEHOLDER,
     CONSOLE_SECTIONS,
     EMPLOYEE_VIEW,
     EVAL_DIR,
     EVAL_PAGE_NOTE,
+    EXPORT_FILE_NAME,
+    EXPORT_HELP_BOTH,
+    EXPORT_HELP_EMPTY,
+    EXPORT_HELP_SESSION,
+    EXPORT_LABEL,
     HELDOUT_BADGE,
     MAX_LOG_ROWS,
     MISSING_KEY_WARNING,
     OPS_LOG_DISABLED_NOTE,
     OPS_VIEW,
+    PERSISTENT_LOG_TITLE,
+    SESSION_LOG_EMPTY,
+    SESSION_LOG_NOTE,
+    SESSION_LOG_TITLE,
     ROUTE_FILTER_OPTIONS,
     THRESHOLD_PANEL_NOTE,
     THRESHOLD_PANEL_TITLE,
@@ -61,8 +75,11 @@ from ui.styles import (
 )
 from ui.formatting import (
     _axis_position,
+    _baseline_run_html,
+    _baseline_run_lines,
     _brand_html,
     _clock,
+    _degraded_session_rows,
     _display_route,
     _format_score,
     _gating_score,
@@ -71,7 +88,9 @@ from ui.formatting import (
     _log_table_html,
     _matches_filters,
     _metric_rows_html,
+    _parse_baseline_metrics,
     _score_band,
+    _session_export_rows,
     _stat_card_html,
     _trace_rows,
     _triage_row_html,
@@ -414,15 +433,51 @@ def _render_console_logs(query_filter: str, log: LogReadResult) -> None:
     _render_log_section(log, query_filter)
 
 
-def _render_log_section(log: LogReadResult, query_filter: str = "") -> None:
-    """Blocked/fallback telemetry from the real JSONL sink.
+def _render_session_log(query_filter: str) -> None:
+    """Blocked and fallback events of the current session.
+
+    This table exists because the panel was empty by default: the sink is
+    read only while ``ENABLE_OPS_VIEW`` is on, and with the flag off the
+    section had nothing to show even when the session had just produced a
+    refusal. These rows come from session state instead, so they are the
+    same requests the list above already renders -- no new reader of the
+    file, and no way around its gate.
 
     Args:
-        log: Bounded read result from the sink.
         query_filter: Free-text filter from the console header.
     """
-    st.markdown('<p class="araya-section">Blocked / Fallback Log</p>',
-                unsafe_allow_html=True)
+    st.markdown(
+        f'<p class="araya-panel-title">{SESSION_LOG_TITLE}</p>',
+        unsafe_allow_html=True,
+    )
+    st.caption(SESSION_LOG_NOTE)
+    rows = _degraded_session_rows(
+        _session_export_rows(st.session_state.get("history", []))
+    )
+    if not rows:
+        st.info(SESSION_LOG_EMPTY)
+        return
+    visible = [row for row in rows if _log_matches(row, query_filter)]
+    if not visible:
+        st.info("No blocked or fallback event in this session matches "
+                "the current search.")
+        return
+    st.markdown(_log_table_html(visible), unsafe_allow_html=True)
+
+
+def _render_persistent_log(log: LogReadResult, query_filter: str) -> None:
+    """The JSONL sink itself, when the demo flag admits it.
+
+    Args:
+        log: Bounded read result from the sink. It is empty whenever
+            ``ENABLE_OPS_VIEW`` is off, because the gate lives in
+            ``read_persistent_events`` rather than here.
+        query_filter: Free-text filter from the console header.
+    """
+    st.markdown(
+        f'<p class="araya-panel-title">{PERSISTENT_LOG_TITLE}</p>',
+        unsafe_allow_html=True,
+    )
     if not config.ENABLE_OPS_VIEW:
         st.info(OPS_LOG_DISABLED_NOTE)
         return
@@ -449,6 +504,23 @@ def _render_log_section(log: LogReadResult, query_filter: str = "") -> None:
         st.caption(f"Showing the newest {MAX_LOG_ROWS} records.")
 
 
+def _render_log_section(log: LogReadResult, query_filter: str = "") -> None:
+    """Blocked and fallback telemetry, this session and on disk.
+
+    The two scopes stay separate tables rather than one merged view: they
+    have different reach and different privacy rules, and a reader has to
+    be able to tell which is which.
+
+    Args:
+        log: Bounded read result from the sink.
+        query_filter: Free-text filter from the console header.
+    """
+    st.markdown('<p class="araya-section">Blocked / Fallback Log</p>',
+                unsafe_allow_html=True)
+    _render_session_log(query_filter)
+    _render_persistent_log(log, query_filter)
+
+
 def _render_kb_stats() -> None:
     """Index-health strip: real counts and this process's build time."""
     documents = _corpus()
@@ -465,61 +537,31 @@ def _render_kb_stats() -> None:
 
 
 @st.cache_data(show_spinner=False)
-def _baseline_snapshot() -> list[dict]:
-    """Read the newest measured-results block from ``eval/BASELINE.md``.
-
-    The baseline file is the record of what was actually run, and it holds
-    one block per phase; this returns the last one. Nothing is recomputed
-    here, so the console cannot report a number the baseline does not
-    contain, and a file that no longer matches the expected shape yields
-    an empty list rather than a guess.
+def _baseline_text() -> str:
+    """Read ``eval/BASELINE.md`` once per process.
 
     Returns:
-        One dict per metric group, each with ``name``, ``cases`` (or
-        ``None``), a list of ``(metric, passed, total, remark)`` tuples,
-        and any group-level remarks the block carried.
+        The file contents, or an empty string when it cannot be read.
+        The panel treats both the same way: it reports what the file
+        recorded and never computes a number of its own.
     """
-    path = EVAL_DIR / "BASELINE.md"
     try:
-        text = path.read_text(encoding="utf-8")
+        return (EVAL_DIR / "BASELINE.md").read_text(encoding="utf-8")
     except OSError:
-        return []
-    marker = text.rfind("## Measured results")
-    if marker < 0:
-        return []
-    block = text[marker:].split("```")
-    if len(block) < 2:
-        return []
-    groups: list[dict] = []
-    for line in block[1].splitlines():
-        metric = _EVAL_METRIC_LINE.match(line)
-        if metric is not None and groups:
-            groups[-1]["metrics"].append(
-                (
-                    metric["name"].strip(),
-                    int(metric["passed"]),
-                    int(metric["total"]),
-                    (metric["note"] or "").strip(" <-"),
-                )
-            )
-            continue
-        group = _EVAL_GROUP_LINE.match(line)
-        if group is not None:
-            groups.append(
-                {
-                    "name": group["name"].strip(),
-                    "cases": (
-                        int(group["cases"]) if group["cases"] else None
-                    ),
-                    "metrics": [],
-                    "remarks": [],
-                }
-            )
-            continue
-        remark = _EVAL_REMARK_LINE.match(line)
-        if remark is not None and groups:
-            groups[-1]["remarks"].append(remark["text"])
-    return [group for group in groups if group["metrics"]]
+        return ""
+
+
+def _baseline_snapshot() -> list[dict]:
+    """Return the newest measured-results block, parsed.
+
+    The parsing itself lives in ``ui.formatting`` so a test can hold it
+    against the real file; this only supplies the text.
+
+    Returns:
+        One dict per metric group, as ``_parse_baseline_metrics``
+        describes, or an empty list when the block cannot be read.
+    """
+    return _parse_baseline_metrics(_baseline_text())
 
 
 @st.cache_data(show_spinner=False)
@@ -561,13 +603,27 @@ def _render_evaluation() -> None:
         '<p class="araya-headline">Evaluation</p>', unsafe_allow_html=True
     )
     st.caption(EVAL_PAGE_NOTE)
+    text = _baseline_text()
+    if not text:
+        st.warning(BASELINE_UNREADABLE)
+        return
+    runs = _baseline_run_lines(text)
+    if runs:
+        st.markdown(
+            '<div class="araya-panel"><div class="araya-panel-head">'
+            f'<span class="araya-panel-title">{BASELINE_RUNS_TITLE}</span>'
+            f'<span class="araya-panel-meta">{BASELINE_RUNS_NOTE}</span>'
+            f'</div><div style="margin-top:10px">'
+            f"{_baseline_run_html(runs)}</div></div>",
+            unsafe_allow_html=True,
+        )
     groups = _baseline_snapshot()
     if not groups:
-        st.warning(
-            "Could not read a measured-results block from "
-            f"{(EVAL_DIR / 'BASELINE.md').name}. The file is the source of "
-            "these numbers, so nothing is shown rather than an estimate."
-        )
+        # The file was readable and its newest block still yielded no
+        # measurement, which is a shape this parser does not know rather
+        # than a result. Saying so is the honest option; inventing a
+        # number from an older block would report the wrong phase.
+        st.warning(BASELINE_UNPARSED)
     for index in range(0, len(groups), 2):
         for column, group in zip(
             st.columns(2, gap="medium"), groups[index:index + 2]
@@ -579,7 +635,7 @@ def _render_evaluation() -> None:
                     f'<span class="araya-badge araya-badge--tuning">'
                     f"{CALIBRATION_BADGE}</span>"
                 )
-            elif name.lower().startswith("held-out"):
+            elif name.lower().startswith("held"):
                 badge = (
                     f'<span class="araya-badge araya-badge--reporting">'
                     f"{HELDOUT_BADGE}</span>"
@@ -631,11 +687,13 @@ def _render_evaluation() -> None:
             "</div></div>",
             unsafe_allow_html=True,
         )
-    with st.expander("อ่าน eval/BASELINE.md ฉบับเต็ม"):
-        try:
-            st.markdown((EVAL_DIR / "BASELINE.md").read_text(encoding="utf-8"))
-        except OSError as error:
-            st.info(f"Baseline file unavailable: {type(error).__name__}")
+    with st.expander(BASELINE_READER_LABEL):
+        # The file is a long report whose own headings are page-sized;
+        # rendered straight into the page they dwarf the console's type
+        # scale, so it is read inside a fixed-height block that the
+        # stylesheet scales down.
+        with st.container(key="araya_baseline_doc", height=460):
+            st.markdown(text)
 
 
 def _render_kb_cards() -> None:
@@ -839,23 +897,51 @@ def _render_console_header(log: LogReadResult) -> str:
             # icon-only control that also shows whether it is on.
             st.toggle("Dark", key="console_dark")
         with export:
-            filtered = [
-                record
+            # The export follows what this console can show, which is why
+            # it works with the sink switched off: the session rows are
+            # already on the page, and the persistent rows are only ever
+            # in ``log`` when ``read_persistent_events`` decided they may
+            # be read. The gate is not re-implemented here.
+            session_rows = [
+                row
+                for row in _session_export_rows(
+                    st.session_state.get("history", [])
+                )
+                if _log_matches(row, query_filter)
+            ]
+            persistent_rows = [
+                dict(record, scope="persistent")
                 for record in log.records
                 if _log_matches(record, query_filter)
             ]
+            rows = session_rows + persistent_rows
             payload = "\n".join(
-                json.dumps(record, ensure_ascii=False) for record in filtered
+                json.dumps(row, ensure_ascii=False) for row in rows
             )
+            if not rows:
+                export_help = EXPORT_HELP_EMPTY
+            elif persistent_rows:
+                export_help = EXPORT_HELP_BOTH.format(
+                    session=len(session_rows),
+                    persistent=len(persistent_rows),
+                )
+            else:
+                export_help = EXPORT_HELP_SESSION.format(
+                    session=len(session_rows)
+                )
             st.download_button(
-                "Export JSONL",
+                EXPORT_LABEL,
                 data=payload,
-                file_name="fallback_queries_export.jsonl",
+                file_name=EXPORT_FILE_NAME,
                 mime="application/x-ndjson",
                 icon=":material/download:",
                 use_container_width=True,
-                disabled=not filtered,
-                help="Download the JSONL rows matching the current search.",
+                # Downloading is not a state change, and a rerun here
+                # would rebuild the header while the browser is still
+                # taking the file.
+                on_click="ignore",
+                disabled=not rows,
+                help=export_help,
             )
     if st.session_state.pop("araya_goto_assistant", False):
         st.switch_page(_PAGE_REFS["assistant"])

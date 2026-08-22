@@ -159,6 +159,22 @@ EVAL_PAGE_NOTE = (
 )
 CALIBRATION_BADGE = "tuning only"
 HELDOUT_BADGE = "reporting only"
+# The evaluation panel reports the baseline file and never runs anything,
+# so its two failure messages have to say which of the two ways the file
+# was unusable -- unreadable, or readable in a shape this build cannot
+# parse. Neither is answered with an estimate.
+BASELINE_UNREADABLE = (
+    "eval/BASELINE.md could not be read. It is the source of these "
+    "numbers, so nothing is shown rather than an estimate."
+)
+BASELINE_UNPARSED = (
+    "The newest measured-results block in eval/BASELINE.md is in a shape "
+    "this panel cannot read, so no metric is shown. The file itself is "
+    "below, unchanged."
+)
+BASELINE_RUNS_TITLE = "Recorded run"
+BASELINE_RUNS_NOTE = "จาก BASELINE.md · ไม่ได้รันใหม่ในหน้านี้"
+BASELINE_READER_LABEL = "อ่าน eval/BASELINE.md ฉบับเต็ม"
 
 # Evaluation artefacts live at the project root, one level above this
 # package; the console reads them, it never runs an evaluation itself.
@@ -173,6 +189,27 @@ _EVAL_GROUP_LINE = re.compile(
     r"(?: \((?P<cases>\d{1,4}) cases\))?"
     r"(?:(?:,| --)\s?[^:]{0,60})?:\s*$"
 )
+# Newer snapshots record the same numbers as Markdown tables instead of a
+# fenced block, so both shapes have to be readable or the panel goes blank
+# on the newest block -- which is exactly what it did. A table row is split
+# on the pipes; the two header spellings that occur are a leading "Gate"
+# column (group per row) and a leading "Metric" column (group per value
+# column). Quantifiers stay bounded, as everywhere else in this file.
+_EVAL_TABLE_ROW = re.compile(r"^\|(?P<cells>.{1,400})\|\s*$")
+_EVAL_TABLE_RULE = re.compile(r"^\|[\s:|-]{1,200}$")
+_EVAL_FRACTION = re.compile(r"(?P<passed>\d{1,6})\s?/\s?(?P<total>\d{1,6})")
+# "(14 cases)" and "(14, read)" both carry the case count of a group.
+_EVAL_CASE_COUNT = re.compile(r"\((?P<cases>\d{1,4})(?:\s?cases|,)")
+# Group headers whose first column names the set rather than the metric.
+_EVAL_GROUP_COLUMNS = frozenset({"gate", "set", "group", "suite", "stage"})
+_EVAL_METRIC_COLUMNS = frozenset({"metric", "measure", "rate"})
+# The run line inside the newest block: what was executed, and its result,
+# separated by the column padding. The command side is greedy so the split
+# lands on the last gap rather than on padding inside the command itself.
+_EVAL_RUN_LINE = re.compile(
+    r"^(?P<command>python\s.{1,120})\s{2,40}(?P<result>\S.{0,60}?)\s*$"
+)
+
 _EVAL_METRIC_LINE = re.compile(
     r"^ {2,8}(?P<name>\S.{0,58}?)(?::\s{1,40}|\s{2,40})"
     r"(?P<passed>\d{1,5})/(?P<total>\d{1,5})"
@@ -197,6 +234,22 @@ _ROUTE_BADGE_COLOURS: dict[str, str] = {
     "blocked": "red",
 }
 NEW_SESSION_LABEL = "New Session"
+# The rail lists this tab's sessions under the button that starts them.
+# Employee-facing, so Thai; the clock and the count come from the record.
+SESSION_LIST_LABEL = "เซสชันของคุณ"
+SESSION_LIST_EMPTY_ENTRY = "เซสชันใหม่"
+SESSION_LIST_EMPTY_META = "ยังไม่มีคำถาม"
+SESSION_REQUEST_COUNT = "{count} คำถาม"
+# Said in the rail rather than left to be discovered: the list is browser
+# state, so a refresh starts over. Persisting it would mean keeping raw
+# employee questions across sessions outside the sink's own privacy gate.
+SESSION_LIST_NOTE = (
+    "ประวัติเก็บอยู่ในแท็บนี้เท่านั้น ปิดหรือรีเฟรชหน้าแล้วจะเริ่มใหม่ "
+    "และแต่ละคำถามถูกตอบแบบเป็นอิสระ ระบบไม่ได้จำบทสนทนาก่อนหน้า"
+)
+# The rail is 260px wide; a question longer than this is cut with an
+# ellipsis rather than wrapped into a paragraph-sized button.
+SESSION_LABEL_CHARS = 42
 
 # Detail line for a query the injection screen let through.
 GUARDRAIL_PASS_DETAIL = "pass · ไม่พบ pattern injection"
@@ -266,7 +319,37 @@ OPS_LOG_DISABLED_NOTE = (
     "Persistent query history is hidden. The JSONL sink stores raw "
     "questions from every past session, so it is off unless "
     "ENABLE_OPS_VIEW is enabled for a local walkthrough. This flag is a "
-    "demo switch, not authentication or RBAC. Requests made in this "
-    "session are still shown above."
+    "demo switch, not authentication or RBAC. The blocked and fallback "
+    "events of this session are listed above, from session state rather "
+    "than from the file."
 )
+# The blocked/fallback panel has two tables with different scopes, and the
+# distinction is the point: one is what this session did, the other is what
+# every past session left on disk.
+SESSION_LOG_TITLE = "Blocked / Fallback — this session"
+SESSION_LOG_NOTE = (
+    "Projected from this session's requests onto the JSONL schema "
+    "(AGENTS.md section 8). It follows the search box; the route filter "
+    "applies to the request list above."
+)
+SESSION_LOG_EMPTY = (
+    "No request in this session was blocked or fell back."
+)
+PERSISTENT_LOG_TITLE = "Persistent sink — all sessions"
+# Both spellings of the export, so the button can say what it is about to
+# write instead of leaving the reader to infer it from a disabled control.
+EXPORT_LABEL = "Export JSONL"
+EXPORT_HELP_SESSION = (
+    "Download {session} row(s) from this session. The persistent sink is "
+    "not included: ENABLE_OPS_VIEW is off."
+)
+EXPORT_HELP_BOTH = (
+    "Download {session} row(s) from this session and {persistent} row(s) "
+    "from the persistent sink. The scope field says which is which."
+)
+EXPORT_HELP_EMPTY = (
+    "Nothing to export yet: no request in this session, and no readable "
+    "sink row."
+)
+EXPORT_FILE_NAME = "araya_telemetry_export.jsonl"
 SNIPPET_CHARS = 180

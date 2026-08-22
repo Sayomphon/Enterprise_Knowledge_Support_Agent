@@ -106,14 +106,16 @@ def _unhandled_failure_state(query: str) -> PipelineState:
 
 
 def _record_request(query: str, state: PipelineState, latency: float) -> None:
-    """Append one real request outcome to the session history.
+    """Append one real request outcome to the active session's history.
 
     The request id is session-scoped presentation bookkeeping (it indexes
-    this history list); every other stored field comes from the graph or
-    is measured here. History is telemetry for the audit view, never
-    conversation memory for the pipeline.
+    that session's history list); every other stored field comes from the
+    graph or is measured here. History is telemetry for the audit view,
+    never conversation memory for the pipeline: no earlier turn is passed
+    back into ``invoke``.
     """
-    history = st.session_state.setdefault("history", [])
+    session = _active_session()
+    history = session["history"]
     history.append(
         {
             "request_id": f"Q-{len(history) + 1:03d}",
@@ -125,18 +127,113 @@ def _record_request(query: str, state: PipelineState, latency: float) -> None:
             "latency_seconds": round(latency, 3),
         }
     )
+    # Rebinding keeps the flat key and the record pointing at the same
+    # list even if something replaced one of them between runs.
+    _bind_active(session)
+
+
+def _next_session_id(started: datetime) -> str:
+    """Return an id for a new session that no existing one already holds.
+
+    The minute-resolution stamp is what the top bar shows and what the
+    user quotes to support, so it is kept; two sessions opened inside one
+    minute would collide on it, and a collision here is not cosmetic --
+    the id keys the rail buttons.
+    """
+    base = f"RAG-{started.strftime('%Y%m%d-%H%M')}"
+    taken = {
+        session["session_id"]
+        for session in st.session_state.get("sessions", [])
+    }
+    candidate = base
+    suffix = 2
+    while candidate in taken:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _new_session_record() -> dict:
+    """Build one empty session: its id, its start clock, its history."""
+    started = datetime.now().astimezone()
+    return {
+        "session_id": _next_session_id(started),
+        "started_at": started.isoformat(timespec="seconds"),
+        "history": [],
+    }
+
+
+def _bind_active(session: dict) -> None:
+    """Point the flat session-state keys at one session.
+
+    ``history`` and ``session_id`` stay as top-level keys because the
+    console reads them directly; binding aliases them onto the active
+    session's own list rather than copying it, so a request recorded here
+    is the same object the console renders.
+    """
+    st.session_state["history"] = session["history"]
+    st.session_state["session_id"] = session["session_id"]
+    st.session_state["active_session"] = session["session_id"]
+
+
+def _sessions() -> list[dict]:
+    """Return every session of this browser session, oldest first.
+
+    The list lives in Streamlit's session state and therefore for as long
+    as the browser tab does. It is deliberately not persisted: the JSONL
+    sink is the only thing that keeps employee questions across sessions,
+    and it stays behind ``ENABLE_OPS_VIEW`` (AGENTS.md section 7).
+    """
+    sessions = st.session_state.get("sessions")
+    if not sessions:
+        sessions = [_new_session_record()]
+        st.session_state["sessions"] = sessions
+        _bind_active(sessions[0])
+    return sessions
+
+
+def _active_session() -> dict:
+    """Return the session the user is currently reading."""
+    sessions = _sessions()
+    active = st.session_state.get("active_session")
+    for session in sessions:
+        if session["session_id"] == active:
+            return session
+    # The pointer named a session that no longer exists; the newest one is
+    # the only defensible fallback, and rebinding keeps the flat keys true.
+    _bind_active(sessions[-1])
+    return sessions[-1]
+
+
+def _start_new_session() -> None:
+    """Open a new session, keeping the previous one in the rail.
+
+    An empty current session is reused rather than stacked: pressing the
+    button twice should not leave a row of sessions that never held a
+    question.
+    """
+    current = _active_session()
+    if not current["history"]:
+        _bind_active(current)
+        return
+    session = _new_session_record()
+    _sessions().append(session)
+    _bind_active(session)
+
+
+def _switch_session(session_id: str) -> None:
+    """Make one archived session the active one again."""
+    for session in _sessions():
+        if session["session_id"] == session_id:
+            _bind_active(session)
+            return
 
 
 def _session_id() -> str:
-    """Return this browser session's identifier, creating it on first use.
+    """Return the active session's identifier, creating it on first use.
 
-    Presentation bookkeeping only: it labels the session in the chat top bar
-    so a user can quote it to support, and it shares the clock with the
-    request ids the console lists for the same session.
+    Presentation bookkeeping only: it labels the session in the chat top
+    bar so a user can quote it to support, and it shares the clock with
+    the request ids the console lists for the same session.
     """
-    session_id = st.session_state.get("session_id")
-    if session_id is None:
-        started = datetime.now().astimezone()
-        session_id = f"RAG-{started.strftime('%Y%m%d-%H%M')}"
-        st.session_state["session_id"] = session_id
-    return session_id
+    return _active_session()["session_id"]

@@ -37,6 +37,8 @@ from ui.labels import (
     NEW_SESSION_LABEL,
     NEXT_STEP_PROMPTS,
     OPS_VIEW,
+    SESSION_LIST_LABEL,
+    SESSION_LIST_NOTE,
     SERVICE_UNAVAILABLE_CHIP,
     SIMILARITY_FOOTNOTE,
     SOURCES_HEADER,
@@ -53,15 +55,20 @@ from ui.formatting import (
     _evidence_pill_html,
     _gating_score,
     _scope_strips_html,
+    _session_rail_label,
     _source_list_html,
     _turn_clock,
 )
 from ui.runtime import (
     _PAGE_REFS,
+    _active_session,
     _corpus,
     _invoke_graph,
     _record_request,
     _session_id,
+    _sessions,
+    _start_new_session,
+    _switch_session,
 )
 
 def _render_user_bubble(query: str, timestamp: str) -> None:
@@ -323,12 +330,14 @@ def _render_employee_view() -> None:
 
 
 def _render_chat_sidebar() -> None:
-    """Employee rail: brand, session reset, and the standing caveat.
+    """Employee rail: brand, the session list, and the standing caveats.
 
-    Mockup rail entries without a real data source (a list of past
-    sessions, settings, support) stay omitted rather than being faked.
-    The console link lives in the top bar with the view switch, so the
-    rail holds one action and does not compete with it.
+    "New Session" used to discard the transcript outright, which made the
+    rail's own list impossible; it now archives the current session and
+    opens a new one, and every session of this browser tab is listed under
+    the button. Rail entries with no real data source behind them
+    (settings, support) stay omitted rather than being faked, and the
+    console link lives in the top bar with the view switch.
     """
     with st.sidebar:
         st.markdown(_brand_html(), unsafe_allow_html=True)
@@ -338,11 +347,30 @@ def _render_chat_sidebar() -> None:
             key="araya_new_session",
             use_container_width=True,
         ):
-            st.session_state.pop("history", None)
-            st.session_state.pop("session_id", None)
+            _start_new_session()
             st.rerun()
+        sessions = _sessions()
+        active = _active_session()["session_id"]
         st.markdown(
-            f'<div class="araya-rail-note">{VIEW_SEPARATION_NOTE}</div>',
+            f'<div class="araya-rail-label">{SESSION_LIST_LABEL}</div>',
+            unsafe_allow_html=True,
+        )
+        # Newest first: the session being read is normally the newest one,
+        # and an older session should never push it below the fold.
+        for session in reversed(sessions):
+            session_id = session["session_id"]
+            if st.button(
+                _session_rail_label(session),
+                key=f"araya_session_{session_id}",
+                type="primary" if session_id == active else "tertiary",
+                use_container_width=True,
+                wrap=True,
+            ):
+                _switch_session(session_id)
+                st.rerun()
+        st.markdown(
+            f'<div class="araya-rail-note">{SESSION_LIST_NOTE}<br><br>'
+            f"{VIEW_SEPARATION_NOTE}</div>",
             unsafe_allow_html=True,
         )
 

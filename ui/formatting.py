@@ -33,8 +33,22 @@ from ui.labels import (
     SCOPE_STRIPS,
     SCORE_BAR_CEILING,
     SCORE_LABEL,
+    SESSION_LABEL_CHARS,
+    SESSION_LIST_EMPTY_ENTRY,
+    SESSION_LIST_EMPTY_META,
+    SESSION_REQUEST_COUNT,
     SNIPPET_CHARS,
     SOURCES_HEADER,
+    _EVAL_CASE_COUNT,
+    _EVAL_FRACTION,
+    _EVAL_GROUP_COLUMNS,
+    _EVAL_GROUP_LINE,
+    _EVAL_METRIC_COLUMNS,
+    _EVAL_METRIC_LINE,
+    _EVAL_REMARK_LINE,
+    _EVAL_RUN_LINE,
+    _EVAL_TABLE_ROW,
+    _EVAL_TABLE_RULE,
     _REPORTER_FAILURE_REASONS,
     _UNSPENT_REPORTER_REASONS,
 )
@@ -701,6 +715,351 @@ def _log_matches(record: dict, query_filter: str) -> bool:
     return needle in haystack.casefold()
 
 
+def _escape_markdown(text: str) -> str:
+    """Neutralise the markdown Streamlit renders inside a widget label.
+
+    A question is user text, and a rail button renders its label as
+    markdown: an asterisk or a bracket in the question would otherwise
+    style the button instead of appearing in it.
+    """
+    for character in ("\\", "`", "*", "_", "[", "]", "#", "~"):
+        text = text.replace(character, "\\" + character)
+    return text
+
+
+def _session_rail_label(session: dict) -> str:
+    """Render one rail entry for a session: its opening question and clock.
+
+    The first question is what identifies a session to the person who
+    asked it, so it is the line; the clock and the request count are the
+    metadata under it. A session that holds no request yet says so rather
+    than being labelled with an empty line.
+
+    Args:
+        session: One session record from ``ui.runtime``.
+
+    Returns:
+        A markdown label for ``st.button``, two lines, question first.
+    """
+    history = session.get("history", [])
+    clock = _clock(str(session.get("started_at", "")))
+    if not history:
+        return (
+            f"{SESSION_LIST_EMPTY_ENTRY}  \n"
+            f"`{clock} · {SESSION_LIST_EMPTY_META}`"
+        )
+    question = str(history[0]["query"])
+    if len(question) > SESSION_LABEL_CHARS:
+        question = question[: SESSION_LABEL_CHARS - 1].rstrip() + "…"
+    count = SESSION_REQUEST_COUNT.format(count=len(history))
+    return f"{_escape_markdown(question)}  \n`{clock} · {count}`"
+
+
+def _session_export_rows(history: list[dict]) -> list[dict]:
+    """Project this session's requests onto the JSONL telemetry schema.
+
+    The console shows these requests already, so exporting them adds no
+    reader to the data; what it adds is a shape. The allowlist is the one
+    in AGENTS.md section 8, which is also what bounds the export: an
+    answer, its evidence, a prompt or a provider payload has no field to
+    travel in, exactly as ``log_fallback_event`` bounds the sink through
+    its signature.
+
+    The rows are session telemetry, not a copy of the sink: they cover
+    every route rather than the degraded ones, they carry the presentation
+    ``request_id`` the console lists them under, and ``latency_ms`` is the
+    wall time the UI measured around ``invoke`` rather than the graph's
+    own reading. ``scope`` names which of the two an exported line came
+    from, so a file holding both stays readable.
+
+    Args:
+        history: Session records as ``ui.runtime`` stored them.
+
+    Returns:
+        One dict per request, oldest first, JSON-serialisable as it is.
+    """
+    rows: list[dict] = []
+    for record in history:
+        state: PipelineState = record["state"]
+        label, _, _ = _display_route(state)
+        rows.append(
+            {
+                "scope": "session",
+                "request_id": record["request_id"],
+                "timestamp": record["timestamp"],
+                "query": record["query"],
+                "route": label.lower(),
+                "reason": state.get("fallback_reason")
+                or state.get("guardrail_reason"),
+                "raw_retrieval_score": state.get("raw_retrieval_score"),
+                "expanded_retrieval_score": state.get(
+                    "expanded_retrieval_score"
+                ),
+                "top_sources": [
+                    document.source_id
+                    for document in state.get("retrieved_candidates", [])
+                ],
+                "rewritten_queries": list(
+                    state.get("rewritten_queries", [])
+                ),
+                "alias_query_count": len(
+                    state.get("alias_expansion_queries", [])
+                ),
+                "scope_topics": list(state.get("scope_topics", [])),
+                "scope_reason": state.get("scope_reason"),
+                "latency_ms": int(record["latency_seconds"] * 1000),
+                "llm_calls": state.get("llm_calls", 0),
+            }
+        )
+    return rows
+
+
+def _degraded_session_rows(rows: list[dict]) -> list[dict]:
+    """Keep the exported rows that carry a reason code.
+
+    Blocked and fallback requests are the ones the sink would have
+    recorded, so this is what the console's blocked/fallback table shows
+    for the current session while the persistent sink stays behind its
+    flag.
+    """
+    return [row for row in rows if row.get("reason")]
+
+
+def _baseline_block(text: str) -> str:
+    """Return the newest measured-results block of ``BASELINE.md``.
+
+    The file holds one block per phase and the newest one is what the
+    console reports. The block ends at the next heading: reading to the
+    end of the file instead would pull later sections' tables into a
+    snapshot that never measured them.
+
+    Args:
+        text: Whole ``BASELINE.md`` contents.
+
+    Returns:
+        The block including its own heading, or an empty string when the
+        file carries no measured-results block at all.
+    """
+    marker = text.rfind("## Measured results")
+    if marker < 0:
+        return ""
+    block = text[marker:]
+    end = block.find("\n## ", 1)
+    return block if end < 0 else block[:end]
+
+
+def _parse_fenced_metrics(block: str) -> list[dict]:
+    """Read the fenced spelling of a measured-results block.
+
+    Older snapshots list each group as ``Held-out (14 cases), strict exit
+    1:`` followed by indented ``metric  6/7`` lines inside one code fence.
+    """
+    fences = block.split("```")
+    if len(fences) < 2:
+        return []
+    groups: list[dict] = []
+    for line in fences[1].splitlines():
+        metric = _EVAL_METRIC_LINE.match(line)
+        if metric is not None and groups:
+            groups[-1]["metrics"].append(
+                (
+                    metric["name"].strip(),
+                    int(metric["passed"]),
+                    int(metric["total"]),
+                    (metric["note"] or "").strip(" <-"),
+                )
+            )
+            continue
+        group = _EVAL_GROUP_LINE.match(line)
+        if group is not None:
+            groups.append(
+                {
+                    "name": group["name"].strip(),
+                    "cases": int(group["cases"]) if group["cases"] else None,
+                    "metrics": [],
+                    "remarks": [],
+                }
+            )
+            continue
+        remark = _EVAL_REMARK_LINE.match(line)
+        if remark is not None and groups:
+            groups[-1]["remarks"].append(remark["text"])
+    return [group for group in groups if group["metrics"]]
+
+
+def _table_rows(block: str) -> list[list[list[str]]]:
+    """Split a block into Markdown tables, each a list of cell rows."""
+    tables: list[list[list[str]]] = []
+    current: list[list[str]] = []
+    for line in block.splitlines():
+        row = _EVAL_TABLE_ROW.match(line.strip())
+        if row is None:
+            if current:
+                tables.append(current)
+                current = []
+            continue
+        if _EVAL_TABLE_RULE.match(line.strip()):
+            continue
+        current.append([cell.strip() for cell in row["cells"].split("|")])
+    if current:
+        tables.append(current)
+    return tables
+
+
+def _cell_metric(cell: str) -> tuple[int, int, str] | None:
+    """Read one table cell as ``passed``, ``total`` and a remark.
+
+    A cell states a rate as ``1.000 (28/28)``; the fraction is what the
+    bar is drawn from, and anything else in the cell -- a second rate, a
+    failing case id -- travels on as the remark rather than being dropped
+    or silently averaged.
+    """
+    fractions = _EVAL_FRACTION.findall(cell)
+    if not fractions:
+        return None
+    passed, total = int(fractions[0][0]), int(fractions[0][1])
+    remark = "" if len(fractions) == 1 else cell
+    return passed, total, remark
+
+
+def _parse_table_metrics(block: str) -> list[dict]:
+    """Read the table spelling of a measured-results block.
+
+    Two header shapes occur. A leading ``Gate`` column names the group on
+    every row; a leading ``Metric`` column makes each remaining column a
+    group of its own, which is how the file compares two runs side by
+    side.
+    """
+    groups: dict[str, dict] = {}
+
+    def group_for(name: str) -> dict:
+        if name not in groups:
+            cases = _EVAL_CASE_COUNT.search(name)
+            groups[name] = {
+                "name": name,
+                "cases": int(cases["cases"]) if cases else None,
+                "metrics": [],
+                "remarks": [],
+            }
+        return groups[name]
+
+    for table in _table_rows(block):
+        if len(table) < 2:
+            continue
+        header = [cell.strip("` ").casefold() for cell in table[0]]
+        if not header:
+            continue
+        if header[0] in _EVAL_GROUP_COLUMNS and len(header) >= 3:
+            for row in table[1:]:
+                if len(row) < 3:
+                    continue
+                metric = _cell_metric(row[2])
+                if metric is None:
+                    continue
+                passed, total, remark = metric
+                group_for(row[0].strip("` "))["metrics"].append(
+                    (row[1].strip("` "), passed, total, remark)
+                )
+            continue
+        if header[0] in _EVAL_METRIC_COLUMNS and len(header) >= 2:
+            for row in table[1:]:
+                if len(row) < 2:
+                    continue
+                for column, cell in enumerate(row[1:], start=1):
+                    if column >= len(table[0]):
+                        continue
+                    metric = _cell_metric(cell)
+                    if metric is None:
+                        continue
+                    passed, total, remark = metric
+                    group_for(table[0][column].strip("` "))[
+                        "metrics"
+                    ].append((row[0].strip("` "), passed, total, remark))
+    return [group for group in groups.values() if group["metrics"]]
+
+
+def _parse_baseline_metrics(text: str) -> list[dict]:
+    """Read the newest measured-results block in either spelling.
+
+    The console reports what the baseline file recorded and never
+    recomputes it, so a block whose shape this cannot read yields an empty
+    list -- the panel then says so instead of showing an estimate.
+
+    Args:
+        text: Whole ``BASELINE.md`` contents.
+
+    Returns:
+        One dict per metric group with ``name``, ``cases`` (or ``None``),
+        ``metrics`` as ``(name, passed, total, remark)`` and any
+        group-level ``remarks``.
+    """
+    block = _baseline_block(text)
+    if not block:
+        return []
+    return _parse_fenced_metrics(block) or _parse_table_metrics(block)
+
+
+def _baseline_run_lines(text: str) -> list[tuple[str, str]]:
+    """List the commands the newest block recorded, with their results.
+
+    Args:
+        text: Whole ``BASELINE.md`` contents.
+
+    Returns:
+        ``(command, result)`` pairs exactly as written, so the panel can
+        state what was run without claiming to have run it.
+    """
+    block = _baseline_block(text)
+    if not block:
+        return []
+    fences = block.split("```")
+    if len(fences) < 2:
+        return []
+    lines: list[tuple[str, str]] = []
+    for line in fences[1].splitlines():
+        run = _EVAL_RUN_LINE.match(line)
+        if run is not None:
+            lines.append((run["command"].strip(), run["result"].strip()))
+    return lines
+
+
+def _baseline_run_html(runs: list[tuple[str, str]]) -> str:
+    """Render the commands the baseline recorded, with their outcomes.
+
+    The outcome is coloured from the text the file already carries -- an
+    ``exit 0`` or an ``OK`` reads as passing, an ``exit 1`` as failing --
+    and nothing is re-run to produce it. A result this cannot classify
+    stays neutral rather than being guessed at.
+
+    Args:
+        runs: ``(command, result)`` pairs from ``_baseline_run_lines``.
+
+    Returns:
+        One row per command, or an empty string when there are none.
+    """
+    if not runs:
+        return ""
+    rows: list[str] = []
+    for command, result in runs:
+        folded = result.casefold()
+        if "exit 0" in folded or (
+            folded.startswith("ran ") and "ok" in folded
+        ):
+            modifier = "ok"
+        elif "exit 1" in folded or "fail" in folded:
+            modifier = "fail"
+        else:
+            modifier = "neutral"
+        rows.append(
+            '<div class="araya-run">'
+            f'<span class="araya-run-cmd araya-mono-face">'
+            f"{html.escape(command)}</span>"
+            f'<span class="araya-run-result araya-run-result--{modifier}">'
+            f"{html.escape(result)}</span></div>"
+        )
+    return "".join(rows)
+
+
 def _metric_rows_html(metrics: list[tuple[str, int, int, str]]) -> str:
     """Render one group's metrics as name, proportion bar, and fraction.
 
@@ -713,15 +1072,18 @@ def _metric_rows_html(metrics: list[tuple[str, int, int, str]]) -> str:
     rows: list[str] = []
     for name, passed, total, remark in metrics:
         width = (passed / total * 100) if total else 0.0
+        # The remark sits under the name rather than beside it: a rate the
+        # file states in the same cell can be as long as the metric name,
+        # and a third column of prose left the name a few pixels wide.
         remark_html = (
-            f'<span class="araya-panel-meta">{html.escape(remark)}</span>'
+            f'<span class="araya-metric-remark">{html.escape(remark)}</span>'
             if remark
             else ""
         )
         rows.append(
             '<div class="araya-metric">'
-            f'<span class="araya-metric-name">{html.escape(name)}</span>'
-            f"{remark_html}"
+            f'<span class="araya-metric-name">{html.escape(name)}'
+            f"{remark_html}</span>"
             '<span class="araya-metric-bar">'
             f'<span class="araya-metric-fill" style="width:{width:.1f}%;'
             'background:#0052CC"></span></span>'
