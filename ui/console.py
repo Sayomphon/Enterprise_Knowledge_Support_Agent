@@ -22,6 +22,7 @@ from pathlib import Path
 import streamlit as st
 
 from src import config
+from src.fallback import ReasonFamily, reason_family
 from src.logging_utils import read_persistent_events
 from src.schemas import (
     LogReadResult,
@@ -73,6 +74,7 @@ from ui.formatting import (
     _score_band,
     _stat_card_html,
     _trace_rows,
+    _triage_row_html,
 )
 from ui.runtime import (
     _PAGE_REFS,
@@ -150,13 +152,15 @@ def _threshold_axis_html() -> str:
     )
 
 
-def _triage_groups() -> list[tuple[str, int, str, str]]:
+def _triage_groups() -> list[tuple[str, int, str, ReasonFamily | None]]:
     """Group this session's degraded requests by reason code.
 
     Returns:
-        ``(reason, count, newest query, tag)`` per reason, most frequent
-        first. The tag separates an attack from a gap in the corpus,
-        because only one of the two is a reason to write a document.
+        ``(reason, count, newest query, family)`` per reason, most
+        frequent first. The family comes from ``src.fallback`` rather
+        than from which state key carried the code: a request refused
+        for being empty is not an attack, and only a knowledge gap is a
+        reason to go and write a document.
 
     Scope is this session on purpose: the JSONL sink holds raw questions
     from every past session and stays behind ``ENABLE_OPS_VIEW``
@@ -173,12 +177,7 @@ def _triage_groups() -> list[tuple[str, int, str, str]]:
         groups.items(), key=lambda item: (-len(item[1]), item[0])
     )
     return [
-        (
-            reason,
-            len(rows),
-            rows[-1]["query"],
-            "attack" if rows[-1]["state"].get("guardrail_reason") else "scope",
-        )
+        (reason, len(rows), rows[-1]["query"], reason_family(reason))
         for reason, rows in ranked
     ]
 
@@ -211,11 +210,23 @@ def _render_console_overview() -> None:
         int(row["state"].get("llm_calls", 0)) for row in history
     )
     reasons = _triage_groups()
+    # The input family is exactly the guardrail's own codes, so it is
+    # also what separates a blocked request from a degraded one here.
     fallback_reason = next(
-        (reason for reason, _, _, tag in reasons if tag == "scope"), "–"
+        (
+            reason
+            for reason, _, _, family in reasons
+            if family is not ReasonFamily.SECURITY_OR_INVALID_INPUT
+        ),
+        "–",
     )
     blocked_reason = next(
-        (reason for reason, _, _, tag in reasons if tag == "attack"), "–"
+        (
+            reason
+            for reason, _, _, family in reasons
+            if family is ReasonFamily.SECURITY_OR_INVALID_INPUT
+        ),
+        "–",
     )
     cells = (
         _stat_card_html(
@@ -251,17 +262,8 @@ def _render_console_overview() -> None:
         )
     with right:
         rows = "".join(
-            '<div class="araya-triage">'
-            f'<span class="araya-triage-count araya-mono-face '
-            f'araya-triage-count--{"red" if tag == "attack" else "amber"}">'
-            f"{count}</span>"
-            '<span class="araya-triage-body">'
-            f'<span class="araya-triage-query">{html.escape(query)}</span>'
-            f'<span class="araya-triage-meta araya-mono-face">'
-            f"{html.escape(reason)}</span></span>"
-            f'<span class="araya-triage-tag araya-triage-tag--{tag}">'
-            f'{"attack" if tag == "attack" else "out of scope"}</span></div>'
-            for reason, count, query, tag in reasons
+            _triage_row_html(reason, count, query, family)
+            for reason, count, query, family in reasons
         )
         empty = (
             '<div class="araya-panel-note">'

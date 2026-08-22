@@ -182,6 +182,28 @@ class TestImportTimeValidation(unittest.TestCase):
             "FINAL_ANSWER_THRESHOLD must not sit below",
         )
 
+    def test_ambiguous_floor_at_the_match_threshold_is_rejected(
+        self,
+    ) -> None:
+        # The under-specified band lies between the two: at or above the
+        # match threshold a topic is resolved rather than ambiguous, so
+        # the band would be empty and the reason code unreachable.
+        self._reload_expecting_error(
+            {
+                "SCOPE_MATCH_THRESHOLD": "0.40",
+                "SCOPE_AMBIGUOUS_MIN_SCORE": "0.40",
+            },
+            "SCOPE_AMBIGUOUS_MIN_SCORE must sit below",
+        )
+
+    def test_ambiguous_floor_outside_the_score_range_is_rejected(
+        self,
+    ) -> None:
+        self._reload_expecting_error(
+            {"SCOPE_AMBIGUOUS_MIN_SCORE": "-0.1"},
+            "SCOPE_AMBIGUOUS_MIN_SCORE",
+        )
+
     def test_non_positive_request_deadline_is_rejected(self) -> None:
         # A zero deadline would skip both boundaries of every request,
         # turning a misconfiguration into a service that answers nothing.

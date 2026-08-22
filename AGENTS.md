@@ -68,7 +68,8 @@ User query
    │
    ▼
 [3] Supported-Scope + Authority Coverage Gate (deterministic, no LLM)
-   ├── unsupported / under-specified topic ──► Fallback + log ──► END
+   ├── unsupported topic ──────► Fallback + log (unsupported_topic) ──► END
+   ├── under-specified topic ──► Fallback + log (ambiguous_topic) ───► END
    ├── no active policy covering the topic ──► Fallback + log ──► END
    ▼ PASS
 [4] Score Router (3 bands, calibrated thresholds)
@@ -435,6 +436,8 @@ schema:
   "top_sources": ["HR-003"],
   "rewritten_queries": [],
   "alias_query_count": 0,
+  "scope_topics": [],
+  "scope_reason": null,
   "latency_ms": 118,
   "llm_calls": 0
 }
@@ -451,15 +454,25 @@ the request cost before it degraded: without them a
 check, and a rewrite the budget skipped is indistinguishable from one
 that ran.
 
+`scope_topics` and `scope_reason` carry the scope gate's own verdict beside the
+routing reason, and are `[]` / `null` on any route that never reached the gate.
+They exist because `reason` names *the gate that stopped the request*, which is
+not always the most informative fact about it: an in-domain question whose raw
+score never cleared the rewrite floor is logged as `low_retrieval_score`
+deliberately — that really is what stopped it — and these two fields are how
+analytics can group the same record by topic without that routing decision being
+rewritten to suit a report. When the scope gate is what degraded the request,
+`scope_reason` and `reason` agree.
+
 Reason codes (extend the enum, never invent ad-hoc strings):
 `prompt_injection`, `low_retrieval_score`, `rewrite_low_retrieval_score`,
 `missing_citation`, `fabricated_citation`, `rewrite_failure`,
 `invalid_query_type`, `empty_query`, `query_too_long`, `reporter_failure`,
 `retrieval_failure`, `evidence_failure`,
-`unsupported_topic`, `no_authoritative_evidence`, `rewrite_rejected`,
-`invalid_answer_structure`, `insufficient_reporter_evidence`,
-`unsupported_numeric_claim`, `llm_not_configured`,
-`request_deadline_exceeded`.
+`unsupported_topic`, `ambiguous_topic`, `no_authoritative_evidence`,
+`rewrite_rejected`, `invalid_answer_structure`,
+`insufficient_reporter_evidence`, `unsupported_numeric_claim`,
+`llm_not_configured`, `request_deadline_exceeded`.
 
 `rewrite_failure` and `llm_not_configured` are what the fallback node records
 when the rewriter produced nothing: the medium band exists because the original
@@ -530,7 +543,7 @@ not read at all, rather than read and then hidden.
 * `eval/retrieval_calibration.json` (25 cases, including in-domain hard
   negatives and paraphrased receipt questions) is for **tuning only**: n-gram configuration, `REWRITE_FLOOR`,
   `DIRECT_ANSWER_THRESHOLD`, `FINAL_ANSWER_THRESHOLD`, `SCOPE_MATCH_THRESHOLD`,
-  `REWRITE_CONTINUITY_THRESHOLD`.
+  `SCOPE_AMBIGUOUS_MIN_SCORE`, `REWRITE_CONTINUITY_THRESHOLD`.
 * `eval/retrieval_heldout.json` (14 cases) is for **reporting only**. Run it once,
   after thresholds are frozen. Never tune against it, never quote calibration
   numbers as generalisation evidence.

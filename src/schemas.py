@@ -221,12 +221,25 @@ class RewriteValidationResult:
             in the model's preference order.
         rejected_queries: Candidates withheld from retrieval. They are
             diagnostics only and must never be logged or executed.
+        dropped_anchor_count: How many of the original query's numeric
+            anchors at least one ACCEPTED candidate left out. The
+            validator refuses a candidate that INVENTS a figure and
+            deliberately tolerates one that omits an existing one, so
+            this counts a tolerated behaviour rather than a defect: a
+            generalizing rewrite drops the figure legitimately, the
+            original query is searched beside it, and the reporter
+            answers from the original either way. The count exists so
+            that harm found downstream can be traced back to the
+            rewrites that dropped anchors instead of being argued
+            about. Like ``rejected_queries`` it is a diagnostic: no
+            route reads it and it never reaches the log.
         reason: Reason code when every candidate was rejected, else
             ``None``.
     """
 
     accepted_queries: tuple[str, ...] = ()
     rejected_queries: tuple[str, ...] = ()
+    dropped_anchor_count: int = 0
     reason: str | None = None
 
 

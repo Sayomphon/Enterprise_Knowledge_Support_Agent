@@ -53,6 +53,15 @@ TIME_QUERY = "เลิกงานหลัง 22:00 เบิกค่าแ�
 TIME_DRIFT_REWRITE = "เลิกงานหลัง 20:00 เบิกค่าแท็กซี่ได้ไหม"
 TIME_VALID_REWRITE = "เบิกค่าแท็กซี่กรณีเลิกงานหลัง 22:00"
 
+# Rewrites that generalize the question away from its figures. They are
+# valid -- the validator accepts them, and the shipped rewrite cache is
+# full of the same shape -- so they are the material of the dropped-anchor
+# diagnostic rather than of a rejection test.
+GENERALIZING_AMOUNT_REWRITE = "ขั้นตอนการเบิกค่าแท็กซี่"
+SECOND_GENERALIZING_AMOUNT_REWRITE = "วิธีขอเบิกค่าแท็กซี่"
+TWO_ANCHOR_QUERY = "เลิกงานหลัง 22:00 เบิกค่าแท็กซี่ไม่เกิน 500 บาทได้ไหม"
+PARTIAL_ANCHOR_REWRITE = "เบิกค่าแท็กซี่ไม่เกิน 500 บาทต้องทำอย่างไร"
+
 UNSUPPORTED_QUERY = "ลาคลอดต้องใช้ใบรับรองแพทย์ไหม"
 UNSUPPORTED_DRIFT_REWRITE = "ลาป่วยต้องใช้ใบรับรองแพทย์กี่วัน"
 
@@ -218,6 +227,80 @@ class TestNumericAnchors(unittest.TestCase):
 
     def test_text_without_digits_has_no_anchors(self) -> None:
         self.assertEqual(numeric_anchors("เบิกค่าแท็กซี่"), set())
+
+
+class TestDroppedAnchorDiagnostic(unittest.TestCase):
+    """Anchor deletion is measured, never refused.
+
+    The validator rejects a candidate that INVENTS a figure; a candidate
+    that omits one is accepted, because generalizing is what a useful
+    rewrite does and the original query is searched beside it. These
+    tests pin both halves: the acceptance, so nobody tightens the rule
+    into an equality check by accident, and the count, so the tolerated
+    behaviour stays visible.
+    """
+
+    def test_a_rewrite_that_keeps_every_figure_counts_nothing(self) -> None:
+        result = validate_rewrites(
+            AMOUNT_QUERY, [AMOUNT_VALID_REWRITE], SLANG_TOPICS
+        )
+
+        self.assertEqual(result.accepted_queries, (AMOUNT_VALID_REWRITE,))
+        self.assertEqual(result.dropped_anchor_count, 0)
+
+    def test_a_generalizing_rewrite_is_accepted_and_counted(self) -> None:
+        result = validate_rewrites(
+            AMOUNT_QUERY, [GENERALIZING_AMOUNT_REWRITE], SLANG_TOPICS
+        )
+
+        self.assertEqual(
+            result.accepted_queries, (GENERALIZING_AMOUNT_REWRITE,)
+        )
+        self.assertEqual(result.dropped_anchor_count, 1)
+
+    def test_only_the_anchors_actually_dropped_are_counted(self) -> None:
+        # The rewrite keeps the amount and loses the clock time, so a
+        # count of 2 would mean the diagnostic reads "any figure moved"
+        # rather than "these figures went missing".
+        result = validate_rewrites(
+            TWO_ANCHOR_QUERY, [PARTIAL_ANCHOR_REWRITE], SLANG_TOPICS
+        )
+
+        self.assertEqual(
+            result.accepted_queries, (PARTIAL_ANCHOR_REWRITE,)
+        )
+        self.assertEqual(result.dropped_anchor_count, 1)
+
+    def test_two_candidates_dropping_the_same_figure_count_once(
+        self,
+    ) -> None:
+        result = validate_rewrites(
+            AMOUNT_QUERY,
+            [GENERALIZING_AMOUNT_REWRITE, SECOND_GENERALIZING_AMOUNT_REWRITE],
+            SLANG_TOPICS,
+        )
+
+        self.assertEqual(len(result.accepted_queries), 2)
+        self.assertEqual(result.dropped_anchor_count, 1)
+
+    def test_a_rejected_candidate_is_not_counted_as_a_drop(self) -> None:
+        # The invented amount is refused, and a refused candidate never
+        # reaches retrieval, so it has nothing to report about anchors.
+        result = validate_rewrites(
+            AMOUNT_QUERY, [AMOUNT_DRIFT_REWRITE], SLANG_TOPICS
+        )
+
+        self.assertEqual(result.accepted_queries, ())
+        self.assertEqual(result.dropped_anchor_count, 0)
+
+    def test_a_question_without_figures_can_never_report_a_drop(
+        self,
+    ) -> None:
+        result = validate_rewrites(
+            SLANG_QUERY, [VALID_REWRITE], SLANG_TOPICS
+        )
+
+        self.assertEqual(result.dropped_anchor_count, 0)
 
 
 class TestLabelledRewriteFixture(unittest.TestCase):

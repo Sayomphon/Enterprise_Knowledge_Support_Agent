@@ -9,6 +9,7 @@ calls no LLM, like the harness it tests.
 
 import contextlib
 import io
+import random
 import re
 import unittest
 from unittest import mock
@@ -23,6 +24,7 @@ from eval.run_eval import (
     RetrievalCase,
     _best_expected_rank,
     _exit_code,
+    _perturb_query,
     _candidate_answer,
     _promoted_answer,
     _validated_citation_cases,
@@ -879,6 +881,72 @@ class TestLiveSetGuards(unittest.TestCase):
                             main(["--set", "answers", "--live"])
 
         self.assertEqual(graph.call_count, 0)
+
+
+class TestTypoPerturbation(unittest.TestCase):
+    """The robustness sweep has to be reproducible and actually noisy.
+
+    A perturbation that silently returns the query unchanged would draw
+    a flat curve and read as a robust index, which is the one way this
+    measurement can lie.
+    """
+
+    QUERY = "ขั้นตอนการเบิกค่าแท็กซี่หลังทำ OT ต้องทำอย่างไร"
+
+    def test_the_same_seed_produces_the_same_query(self) -> None:
+        first = _perturb_query(self.QUERY, 2, random.Random(42))
+        second = _perturb_query(self.QUERY, 2, random.Random(42))
+
+        self.assertEqual(first, second)
+
+    def test_a_different_seed_produces_a_different_query(self) -> None:
+        # Not a guarantee for every pair of seeds, but for these two it
+        # pins that the generator is actually consulted.
+        self.assertNotEqual(
+            _perturb_query(self.QUERY, 3, random.Random(1)),
+            _perturb_query(self.QUERY, 3, random.Random(2)),
+        )
+
+    def test_every_level_actually_changes_the_query(self) -> None:
+        for level in (1, 2, 3):
+            with self.subTest(level=level):
+                perturbed = _perturb_query(
+                    self.QUERY, level, random.Random(42)
+                )
+
+                self.assertNotEqual(perturbed, self.QUERY)
+
+    def test_a_perturbed_query_stays_close_to_the_original(self) -> None:
+        # Three single-character edits, so the length may fall by at
+        # most three and never grow: an edit that rewrote the question
+        # would measure the perturber rather than the index.
+        perturbed = _perturb_query(self.QUERY, 3, random.Random(42))
+
+        self.assertLessEqual(len(perturbed), len(self.QUERY))
+        self.assertGreaterEqual(len(perturbed), len(self.QUERY) - 3)
+
+    def test_a_query_too_short_to_edit_is_returned_unchanged(self) -> None:
+        self.assertEqual(_perturb_query("ล", 3, random.Random(42)), "ล")
+
+    def test_the_sweep_reports_without_changing_the_exit_code(self) -> None:
+        # It scores unlabelled probes, so it must never gate: a random
+        # edit that destroys a question is a fact about the edit.
+        with mock.patch("builtins.print"):
+            plain = main(["--set", "calibration", "--strict"])
+            swept = main(["--set", "calibration", "--strict", "--perturb"])
+
+        self.assertEqual(plain, 0)
+        self.assertEqual(swept, plain)
+
+    def test_the_sweep_prints_a_curve_with_a_clean_baseline(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            main(["--set", "calibration", "--perturb"])
+
+        output = stdout.getvalue()
+        for level in (0, 1, 2, 3):
+            with self.subTest(level=level):
+                self.assertIn(f"perturbations={level}", output)
 
 
 class TestStrictGateEndToEnd(unittest.TestCase):

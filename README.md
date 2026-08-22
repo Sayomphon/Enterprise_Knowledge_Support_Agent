@@ -19,7 +19,7 @@ user until a pure function has validated it.
 | LLM | `langchain-openai` `ChatOpenAI`, model configurable via env |
 | Entry points | CLI (`main.py`), Streamlit (`app.py` + `ui/`) |
 | Telemetry | Append-only JSONL, no external infrastructure |
-| Tests | 431 `unittest` cases, fully offline, no API key required |
+| Tests | 484 `unittest` cases, fully offline, no API key required (5 of them are an opt-in live smoke test that skips itself) |
 
 This README is the **submission brief** — [problem](#1-problem-and-scope),
 [quick start](#2-quick-start), [architecture](#3-architecture),
@@ -83,15 +83,18 @@ python -m unittest discover -s tests
 
 ```text
 ----------------------------------------------------------------------
-Ran 431 tests in 1.406s
+Ran 484 tests in 2.244s
 
-OK
+OK (skipped=5)
 ```
 
 **The entire test suite, the whole retrieval stack, and the offline evaluation
 harness run without a key** and open no network connection; the LLM boundary is
-mocked at the agent module seam. If the suite does not pass, the environment is
-wrong — do not continue.
+mocked at the agent module seam. The five skipped tests are the one exception
+this repository allows itself — a live smoke test that reaches a real provider
+and skips unless `RUN_LIVE_SMOKE=1` is set with a credential
+([`tests/live/test_live_smoke.py`](tests/live/test_live_smoke.py)). If the suite
+does not pass, the environment is wrong — do not continue.
 
 ```bash
 python main.py --check                      # corpus + credential readiness
@@ -149,7 +152,7 @@ flowchart TD
     RO ==> VS
     VS ==>|"medium &middot; 0.10 &le; raw &lt; 0.19"| EX
     VS ==>|"high &middot; raw &ge; 0.19"| SE
-    VS -. "raw &lt; 0.10 &middot; low_retrieval_score<br/>or unsupported_topic" .-> FB
+    VS -. "raw &lt; 0.10 &middot; low_retrieval_score<br/>or unsupported_topic / ambiguous_topic" .-> FB
     EX ==>|"alias score &ge; 0.21 &middot; 0 rewrite calls"| SE
     EX ==>|"still below 0.21"| RW
     EX -. "retrieval_failure" .-> FB
@@ -200,6 +203,7 @@ a description of the code.
 | `blocked` | A guardrail rule, the length limit, or the type check rejected the input | 0 | `test_route_1_injection_is_refused_…` |
 | `fallback` (low band) | Raw score below the rewrite floor | 0 | `test_route_2_low_score_falls_back_…` |
 | `fallback` (unsupported topic) | In-domain question with no policy behind it | 0 | `test_unsupported_topic_falls_back_…`, `test_zero_llm_routes_run_no_alias_expansion` |
+| `fallback` (ambiguous topic) | Question touching two supported topics without naming either | 0 | `test_under_specified_question_falls_back_as_ambiguous` |
 | `direct_answer` | The high band reached the reporter | 1 — Reporter | `test_route_3_high_score_answers_…` |
 | `direct_answer` (alias-recovered) | The medium band cleared the final threshold on alias expansion alone | 1 — Reporter | `test_alias_expansion_answers_the_medium_band_without_a_rewrite` |
 | `rewrite` | The medium band still needed a model rewrite | 2 — Rewriter + Reporter | `test_route_4_medium_score_rewrites_then_answers` |
@@ -226,7 +230,10 @@ the space here.
 mark is transposed. There is no spell checker and no embedding model; the
 character n-gram index still ranks `CHAT-002` first, because the same
 misspelling appears in the chat transcript itself. The noisy half of the corpus
-is what makes informal spellings retrievable at all.
+is what makes informal spellings retrievable at all. One case is an anecdote, so
+the claim is also measured: `--perturb` injects one, two and three typos into
+every correctly-spelled answerable query under a fixed seed, and Hit@3 does not
+move on any split ([section 5](#5-evaluation-scorecard)).
 
 **Maternity leave: refused at 0.2237, above the answer threshold.** The case that
 defines the system. The question shares most of its wording with the sick-leave
@@ -301,6 +308,23 @@ and one case's shape is not evidence of a gap — the group is. Their story is i
 correctness — no offline metric reads an answer. *OOD* counts only
 out-of-domain questions; in-domain topics with no policy have their own row, and
 neither borrows the other's denominator.
+
+**Under injected typos**, measured with `--perturb` (fixed seed, one, two and
+three single-character Thai edits per correctly-spelled answerable query):
+
+| Injected typos | 0 | 1 | 2 | 3 |
+|---|---:|---:|---:|---:|
+| Hit@3, calibration (7) | 7/7 | 7/7 | 7/7 | 7/7 |
+| Hit@3, near-domain (5) | 5/5 | 5/5 | 5/5 | 5/5 |
+| Hit@3, held-out (4) | 4/4 | 4/4 | 4/4 | 4/4 |
+| routed `answered`, calibration | 7/7 | 7/7 | 7/7 | 6/7 |
+| routed `answered`, near-domain | 5/5 | 4/5 | 4/5 | 4/5 |
+
+Retrieval does not degrade at all; the **route** does, on two cases whose score
+falls under a threshold while the right document is still in the top three —
+the pipeline preferring a fallback to an answer it is no longer confident in.
+The sample is four to seven cases per split with one probe per level, so this
+shows the index degrades gracefully, not by how much.
 
 ### Guardrail and answer contract
 
@@ -385,6 +409,13 @@ meal_reimbursement, hotel_reimbursement, phone_reimbursement,
 internet_reimbursement, office_equipment, training_expense,
 per_diem, business_leave, fuel_mileage
 ```
+
+A question that touches two of the supported topics without naming either —
+`ลาได้กี่วัน`, "how many days of leave can I take" — is refused as
+`ambiguous_topic` rather than as a corpus gap, and is answered with a request to
+name the leave or expense type. The route is identical to any other refusal; only
+the sentence the employee reads changes, because the corpus probably does hold
+that answer and sending them to HR would be wrong.
 
 **This is a closed alias catalog for eight documents, not an intent classifier.**
 An expense item nobody thought to list can still reach the answer route on the
@@ -482,9 +513,12 @@ Every exclusion below is a clean seam rather than a stub, so the production path
 is additive instead of a rewrite: the `Retriever` protocol, the scope gate, the
 answer validator, `config.py`, `logging_utils`, the guardrail module, the entry
 points, and the policy lifecycle each have a documented next step in
-[`docs/design.md`](docs/design.md#seams-not-stubs). The one worth stating here is
-retrieval, because "BM25 then hybrid then embeddings" is the advice everyone
-gives and almost nobody attaches a trigger to.
+[`docs/design.md`](docs/design.md#seams-not-stubs). Two of them — the facet-based
+scope gate and policy lifecycle governance — are specified in enough detail to
+build, with the measurable trigger that would justify building them, in
+[Production sketches](docs/design.md#production-sketches--designed-not-built).
+The one worth stating here is retrieval, because "BM25 then hybrid then
+embeddings" is the advice everyone gives and almost nobody attaches a trigger to.
 
 ### When to escalate retrieval
 

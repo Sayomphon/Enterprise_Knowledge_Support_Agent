@@ -33,6 +33,8 @@ LOG_SCHEMA_KEYS = [
     "top_sources",
     "rewritten_queries",
     "alias_query_count",
+    "scope_topics",
+    "scope_reason",
     "latency_ms",
     "llm_calls",
 ]
@@ -167,6 +169,34 @@ class TestLogWrite(unittest.TestCase):
         self.assertNotIn(str(self.log_path), message)
         self.assertNotIn(QUERY, message)
         self.assertNotIn(str(self.log_path), str(result))
+
+    def test_scope_fields_default_to_an_absent_verdict(self) -> None:
+        # A blocked request never reaches the scope gate, so its record
+        # says "no verdict" rather than omitting the keys: a JSONL
+        # reader should not have to distinguish a missing key from a
+        # gate that ran and resolved nothing.
+        self._append()
+
+        record = self._records()[0]
+        self.assertEqual(record["scope_topics"], [])
+        self.assertIsNone(record["scope_reason"])
+
+    def test_the_scope_verdict_is_recorded_beside_the_reason(self) -> None:
+        # The pair this field exists for: an in-domain question stopped
+        # by its raw score keeps `low_retrieval_score` as the reason,
+        # and the topic it did resolve is still readable.
+        self._append(
+            reason="low_retrieval_score",
+            scope_topics=["annual_leave", "sick_leave"],
+            scope_reason="unsupported_topic",
+        )
+
+        record = self._records()[0]
+        self.assertEqual(record["reason"], "low_retrieval_score")
+        self.assertEqual(
+            record["scope_topics"], ["annual_leave", "sick_leave"]
+        )
+        self.assertEqual(record["scope_reason"], "unsupported_topic")
 
     def test_only_allowlisted_fields_can_reach_the_sink(self) -> None:
         # The keyword-only signature is the enforcement: a prompt, an

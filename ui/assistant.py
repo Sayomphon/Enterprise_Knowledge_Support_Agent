@@ -15,12 +15,14 @@ import streamlit as st
 
 from src import config
 from src.fallback import (
+    is_ambiguous_topic,
     is_service_failure,
     response_text_for_state,
 )
 from src.schemas import PipelineState
 
 from ui.labels import (
+    AMBIGUOUS_TOPIC_CHIP,
     ANSWERED_CHIP,
     AUDIT_ONLY_NOTE,
     BLOCKED_CHIP,
@@ -222,22 +224,26 @@ def _render_agent_card(record: dict) -> None:
         # notice card must describe the same failure the fixed text
         # above already states, and a second copy of that boundary in
         # the UI would drift from it.
-        service_unavailable = is_service_failure(
-            state.get("fallback_reason")
-        )
+        reason = state.get("fallback_reason")
+        service_unavailable = is_service_failure(reason)
+        under_specified = is_ambiguous_topic(reason)
+        if service_unavailable:
+            icon, title = "cloud_off", SERVICE_UNAVAILABLE_CHIP
+        elif under_specified:
+            icon, title = "help", AMBIGUOUS_TOPIC_CHIP
+        else:
+            icon, title = "help_center", FALLBACK_CHIP
         _render_notice_card(
             record,
             tone="fallback",
-            icon="cloud_off" if service_unavailable else "help_center",
-            title=(
-                SERVICE_UNAVAILABLE_CHIP
-                if service_unavailable
-                else FALLBACK_CHIP
-            ),
+            icon=icon,
+            title=title,
             text=fixed_text or "",
             # An unconfigured answer service is not a gap in the corpus,
             # so pointing the employee at other topics would misdescribe
-            # the failure: the ways forward stay for evidence fallbacks.
+            # the failure: the ways forward stay for the two outcomes
+            # that really are about what the corpus can answer, and an
+            # under-specified question is the one they help most.
             next_steps=not service_unavailable,
             note=AUDIT_ONLY_NOTE,
         )

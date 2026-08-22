@@ -3,10 +3,10 @@
 The writer accepts only the allowlisted fields of the AGENTS.md section 8
 schema: query text, reason code, the two retrieval scores, top source
 ids, rewritten queries, the count of deterministic alias variants
-searched, and two request-cost figures -- elapsed milliseconds and
-provider calls spent. Secrets, system prompts, and provider payloads
-cannot pass through this interface because the signature does not accept
-them.
+searched, the scope gate's resolved topics and its own verdict, and two
+request-cost figures -- elapsed milliseconds and provider calls spent.
+Secrets, system prompts, and provider payloads cannot pass through this
+interface because the signature does not accept them.
 
 Writing stays best-effort -- a filesystem failure must never break a user
 request -- but it is no longer silent: the writer reports the outcome so
@@ -53,6 +53,8 @@ def log_fallback_event(
     top_sources: Sequence[str],
     rewritten_queries: Sequence[str],
     alias_query_count: int = 0,
+    scope_topics: Sequence[str] = (),
+    scope_reason: str | None = None,
     latency_ms: int | None = None,
     llm_calls: int = 0,
     log_path: str | Path | None = None,
@@ -81,6 +83,21 @@ def log_fallback_event(
             expansion searched, zero outside the medium band. It is what
             distinguishes "expansion found nothing" from "no expansion
             ran" when reading a fallback back.
+        scope_topics: Supported topics the scope gate resolved for this
+            query, empty when it resolved none or never ran. It is
+            written beside ``reason`` rather than folded into it: an
+            in-domain question the corpus has no policy for is logged
+            under whichever gate stopped it first, so the topic it did
+            reach is the field that says which document would close the
+            gap.
+        scope_reason: The scope gate's own verdict code, or ``None`` on
+            a route that never asked it. It duplicates ``reason``
+            exactly when the gate is what degraded the request, and
+            differs when a later or earlier stage did -- which is the
+            point: an unsupported question whose raw score was too low
+            is logged as ``low_retrieval_score`` on purpose, and this
+            field is how analytics can see the scope verdict behind it
+            without that routing decision being changed.
         latency_ms: Wall-clock milliseconds the request spent before it
             degraded, or ``None`` when the caller tracked no start. It
             is what makes a deadline-exceeded record checkable rather
@@ -111,6 +128,8 @@ def log_fallback_event(
             "top_sources": list(top_sources),
             "rewritten_queries": list(rewritten_queries),
             "alias_query_count": alias_query_count,
+            "scope_topics": list(scope_topics),
+            "scope_reason": None if scope_reason is None else str(scope_reason),
             "latency_ms": latency_ms,
             "llm_calls": llm_calls,
         }

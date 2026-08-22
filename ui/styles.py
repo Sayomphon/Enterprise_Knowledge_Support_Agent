@@ -646,8 +646,11 @@ _CONSOLE_LAYOUT_CSS = """
     font-size: 12px; border-radius: 6px; padding: 3px 8px;
     border: 1px solid; white-space: nowrap;
 }
-.araya-triage-tag--scope { color: #0052CC; border-color: #C7D6F5; }
-.araya-triage-tag--attack { color: #BA1A1A; border-color: #F5C7C7; }
+.araya-triage-tag--knowledge { color: #0052CC; border-color: #C7D6F5; }
+.araya-triage-tag--input { color: #BA1A1A; border-color: #F5C7C7; }
+.araya-triage-tag--service { color: #B76E00; border-color: #F0D9B5; }
+.araya-triage-tag--validation { color: #5E4DB2; border-color: #D7D0F0; }
+.araya-triage-tag--unknown { color: #6b6d76; border-color: #DCDDE3; }
 
 /* Request list: one button per row so a Thai question can wrap instead of
    being clipped into a table cell. */

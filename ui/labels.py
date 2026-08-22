@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from src.fallback import ReasonCode
+from src.fallback import ReasonCode, ReasonFamily
 
 SCORE_LABEL = "Retrieval Similarity (heuristic)"
 # A policy that entered the evidence through a chat document's canonical
@@ -91,6 +91,10 @@ FALLBACK_CHIP = "ยังไม่มีเอกสารรองรับค
 # the chip must not tell the employee the evidence was thin when the
 # answer service was simply not configured (remediation plan Finding 8).
 SERVICE_UNAVAILABLE_CHIP = "บริการตอบคำถามยังไม่พร้อมใช้งาน"
+# An under-specified question is neither: the corpus may hold the answer
+# and the employee only has to say which one they want, so the card must
+# not announce a gap that may not exist.
+AMBIGUOUS_TOPIC_CHIP = "ช่วยระบุคำถามให้ชัดขึ้นอีกนิด"
 ANSWERED_CHIP = "ตอบจากเอกสารอ้างอิง"
 SOURCES_HEADER = "เอกสารอ้างอิง {count} ฉบับ"
 USER_TURN_LABEL = "คุณถาม"
@@ -130,9 +134,21 @@ THRESHOLD_PANEL_NOTE = (
 )
 TRIAGE_PANEL_TITLE = "คำถามที่ยังตอบไม่ได้ (ไปปรับ KB)"
 TRIAGE_PANEL_NOTE = (
-    "จัดกลุ่มตาม reason code แล้วเรียงตามจำนวน เพื่อชี้ว่าควรเพิ่มเอกสาร"
-    "เรื่องใดก่อน"
+    "จัดกลุ่มตาม reason code แล้วเรียงตามจำนวน · ป้ายด้านขวาคือ family ของ "
+    "reason นั้น ซึ่งบอกว่าใครควรรับงานต่อ (เพิ่มเอกสาร / ดูระบบ / "
+    "ตรวจ input / ตรวจสัญญาคำตอบ)"
 )
+# Triage tag per reason family: the words the console prints and the CSS
+# modifier that colours them. Keyed by the enum rather than by its string
+# so a family added in ``src`` shows up here as a missing key instead of
+# rendering as an unstyled chip. The vocabulary stays English because
+# these are machine surfaces, like the reason codes beside them.
+REASON_FAMILY_TAGS: dict[ReasonFamily, tuple[str, str]] = {
+    ReasonFamily.KNOWLEDGE_GAP: ("knowledge gap", "knowledge"),
+    ReasonFamily.SERVICE_FAILURE: ("service", "service"),
+    ReasonFamily.SECURITY_OR_INVALID_INPUT: ("input rejected", "input"),
+    ReasonFamily.VALIDATION_FAILURE: ("validation", "validation"),
+}
 TRACE_PANEL_NOTE = (
     "ทุกค่าอ่านจาก PipelineState ของ request นั้น ไม่มีการคำนวณใหม่ในชั้น UI "
     "· เวลาต่อ node ยังไม่มีใน state จึงไม่แสดง"

@@ -17,6 +17,9 @@
 6. [Logging and privacy](#logging-and-privacy)
 7. [Configuration](#configuration)
 8. [Repository map](#repository-map)
+9. [Remaining known limitations](#remaining-known-limitations)
+10. [Seams, not stubs](#seams-not-stubs)
+11. [Production sketches — designed, not built](#production-sketches--designed-not-built)
 
 ---
 
@@ -127,7 +130,12 @@ hardest — the chat transcripts, where `ลาพักรอ้น` and `ใ�
 The options were a Thai word segmenter plus word TF-IDF, or character n-grams
 with no segmentation at all. Character (2,5) n-grams won because a typo still
 shares most of its n-grams with the correct spelling: `ลาพักรอ้น` retrieves
-`HR-001` at 0.2303 with no spelling correction anywhere in the pipeline. The cost
+`HR-001` at 0.2303 with no spelling correction anywhere in the pipeline. That
+claim is now measured rather than argued from that one case — `--perturb` injects
+one, two and three single-character Thai typos under a fixed seed and Hit@3 does
+not move on any split (`eval/RESULTS.md`); what does move is the route, on two
+cases whose score falls under a threshold while the right document is still
+retrieved. The cost
 is that the score is pure surface overlap, so two texts about different things
 that share vocabulary score highly — which is exactly the hole the scope gate in
 [section 6](../README.md#6-scope-and-what-a-citation-proves) exists to plug. I would revisit
@@ -233,7 +241,7 @@ sequenceDiagram
         RT->>VS: candidates and raw score
 
         alt unsupported topic, or no active policy covers it
-            VS->>L: append unsupported_topic or no_authoritative_evidence
+            VS->>L: append unsupported_topic / ambiguous_topic / no_authoritative_evidence
             VS-->>E: fixed fallback text
             Note over VS,P: no provider call - similarity alone never admits a question
         else low band - raw below 0.10
@@ -353,19 +361,29 @@ Every blocked and fallback event appends one JSON object to
   "expanded_retrieval_score": null,
   "top_sources": ["HR-003"],
   "rewritten_queries": [],
+  "alias_query_count": 0,
+  "scope_topics": [],
+  "scope_reason": null,
   "latency_ms": 118,
   "llm_calls": 0
 }
 ```
 
-Twenty reason codes are defined as an enum in
+`scope_topics` and `scope_reason` record what the scope gate resolved, beside
+rather than inside `reason`. `reason` names the gate that actually stopped the
+request — an in-domain question whose raw score never cleared the rewrite floor
+is logged as `low_retrieval_score` on purpose — so these two fields are what let
+a report group by topic without a routing rule being rewritten to suit it. Both
+are empty on a route that never reached the gate, such as a blocked request.
+
+Twenty-one reason codes are defined as an enum in
 [`src/fallback.py`](../src/fallback.py); ad-hoc strings are not permitted, and the
 complete set is:
 
 | Stage | Reason codes |
 |---|---|
 | Input validation | `prompt_injection`, `invalid_query_type`, `empty_query`, `query_too_long` |
-| Scope and authority | `unsupported_topic`, `no_authoritative_evidence` |
+| Scope and authority | `unsupported_topic`, `ambiguous_topic`, `no_authoritative_evidence` |
 | Retrieval score | `low_retrieval_score`, `rewrite_low_retrieval_score` |
 | Rewrite | `rewrite_failure`, `rewrite_rejected` |
 | Answer service | `llm_not_configured`, `reporter_failure` |
@@ -374,14 +392,38 @@ complete set is:
 | Answer contract | `missing_citation`, `fabricated_citation`, `invalid_answer_structure`, `insufficient_reporter_evidence`, `unsupported_numeric_claim` |
 
 Several of these exist specifically so a degraded request is not mislabelled.
-Five of them -- `llm_not_configured`, `reporter_failure`, `rewrite_failure`,
-`retrieval_failure` and `evidence_failure` -- name a stage that could not run,
-so `src/fallback.py` answers them with the service-unavailable text instead of
-the insufficient-evidence one: an employee told that no policy was found would
-go and ask HR about a rule the pipeline never read. `rewrite_rejected` is not in
-that family and keeps the evidence wording, because there the rewriter worked
-and the deterministic validator refused its output; it separates "every rewrite
-drifted" from "the corpus does not have this".
+Six of them -- `llm_not_configured`, `reporter_failure`, `rewrite_failure`,
+`retrieval_failure`, `evidence_failure` and `request_deadline_exceeded` -- name a
+stage that could not run, so `src/fallback.py` answers them with the
+service-unavailable text instead of the insufficient-evidence one: an employee
+told that no policy was found would go and ask HR about a rule the pipeline never
+read. `rewrite_rejected` is not in that family and keeps the evidence wording,
+because there the rewriter worked and the deterministic validator refused its
+output; it separates "every rewrite drifted" from "the corpus does not have
+this".
+
+`ambiguous_topic` is the third wording, and the only one that asks the employee
+for something. It is recorded when a query touches at least two supported topics
+above `SCOPE_AMBIGUOUS_MIN_SCORE` without resolving any of them — `ลาได้กี่วัน`,
+"how many days of leave can I take", which names no leave type — and its text
+asks which one was meant instead of reporting a gap the corpus may not have.
+Unlike `unsupported_topic` it is not gated on the rewrite floor: an unfinished
+question is short and vague, so it almost always scores low, and behind that gate
+the code could never be recorded at all. Nothing about the routing changes — the
+request still falls back with zero LLM calls — which is why the exception is
+safe to make for wording and would not be for a verdict.
+For reporting rather than routing, `reason_family()` in the same module groups
+every code into one of four families — `knowledge_gap`, `service_failure`,
+`security_or_invalid_input`, `validation_failure` — each implying a different
+owner: a document somebody has to write, an operational incident, an input the
+screen refused, and a contract this repository owns rejecting model output. The
+codes themselves never collapse; the families exist so the console's triage panel
+and any later warehouse query can rank causes without hard-coding a code list
+that a new member would silently fall out of. A test asserts the mapping is total
+in both directions, and that the service family is exactly the set behind the
+service-unavailable wording, so a request told the service is down cannot be
+counted as a missing document.
+
 Only *executed* rewrites are logged — a candidate the validator rejected is model
 output about the user's question and never enters the record. The same holds for
 a rejected candidate answer: the log carries its reason code, never its text.
@@ -433,6 +475,7 @@ calibrated number; `.env` is git-ignored and never committed.
 | `DIRECT_ANSWER_THRESHOLD` | `0.19` | At or above this, answer directly |
 | `FINAL_ANSWER_THRESHOLD` | `0.21` | Minimum expanded score after a rewrite |
 | `SCOPE_MATCH_THRESHOLD` | `0.40` | Alias containment needed to claim a topic |
+| `SCOPE_AMBIGUOUS_MIN_SCORE` | `0.11` | Second-topic score above which a refusal is reported as under-specified |
 | `REWRITE_CONTINUITY_THRESHOLD` | `0.05` | Minimum lexical continuity of an accepted rewrite |
 | `TOP_K` | `3` | Retrieved candidates |
 | `MAX_QUERY_CHARS` | `500` | Input length limit |
@@ -452,6 +495,7 @@ its own. The provenance of each, from the 2026-08-20 sweep over
 | `DIRECT_ANSWER_THRESHOLD` | 0.19 | The salary hard negative scores raw **0.1773**; the next answerable case scores **0.1972**. Answering directly starts above the hard negative. |
 | `FINAL_ANSWER_THRESHOLD` | 0.21 | Recalibrated down from 0.24 once the scope gate took over hard-negative rejection. At 0.24 the weakest answerable slang case (expanded **0.2176**) was indistinguishable from the salary hard negative (**0.2152**) and lost its answer. At 0.21 calibration coverage is 16/16 with precision still 16/16 on the 25-case split, and 0.21 stays above the highest expanded score seen for an unsupported in-domain case (**0.1884**). The trade-off is explicit: precision on this band now rests on the scope gate, so weakening the scope catalog would weaken this threshold too. |
 | `SCOPE_MATCH_THRESHOLD` | 0.40 | Every answerable case resolves its topic at **0.5714** or above (the weakest is the `ลาพักรอ้น` typo; exact and slang aliases score 1.0000), while the strongest case that must *not* resolve scores **0.1667**. 0.40 sits near the midpoint of that gap. |
+| `SCOPE_AMBIGUOUS_MIN_SCORE` | 0.11 | Separates an unfinished question from an out-of-domain one, on the **second-best** topic score rather than the best: one partial match is a coincidence, two are an ambiguity. Measured 2026-08-22 on calibration, near-domain and 23 probe queries — the strongest second-best score of an out-of-domain query is **0.0833**, the under-specified calibration case scores **0.1333**, and 0.11 is the midpoint. Precision-first: "what documents do I need" sits just below at **0.1034** and keeps the generic wording. |
 | `REWRITE_CONTINUITY_THRESHOLD` | 0.05 | Valid normalisations in [`eval/rewrite_cases.json`](../eval/rewrite_cases.json) score **0.0756** to **0.3178**; a rewrite that replaces the question wholesale scores **0.0086** or less. This is a floor against wholesale replacement only — drift that stays lexically close, such as 500 baht becoming 5,000, is caught by the anchor and topic rules instead. |
 
 Held-out data was not consulted for any of these numbers. A boolean flag is
@@ -510,6 +554,27 @@ declaration form but defers the actual case to a manager.
 The README carries the limitations a reviewer must see in the first ten minutes.
 These are the rest — real, and narrower.
 
+* **The rewrite validator tolerates anchor deletion, and that is deliberate.**
+  The anchor rule is one-sided: a candidate may not *add* a figure the employee
+  never wrote — 500 baht becoming 5,000 is refused — but it may leave one out,
+  so a question about two days of annual leave may be rewritten into a question
+  about filing annual leave. Turning the rule into an equality check would
+  refuse the generalizing rewrites the model actually produces, and the blast
+  radius it would be buying protection against is small for two structural
+  reasons: the original query is searched beside every rewrite, so the search
+  cannot lose what the employee wrote, and the reporter is handed the original
+  query rather than the rewrite
+  ([`src/graph.py`](../src/graph.py), `report_node`), so no figure reaches an
+  answer through a rewrite at all. What deletion could still cost is ranking, so
+  it is measured rather than argued about: `RewriteValidationResult` carries
+  `dropped_anchor_count`, a diagnostic no route reads and nothing logs. Its
+  value across every shipped fixture is currently **0** — no medium-band query
+  in [`eval/cached_rewrites.json`](../eval/cached_rewrites.json) carries a
+  figure at all, so today the tolerance is latent rather than exercised, which
+  is also why enforcing it now would be a change no set can measure. A soft
+  rule becomes justified the day an answer error in
+  [`eval/ANSWER_RESULTS.md`](../eval/ANSWER_RESULTS.md) traces back to a rewrite
+  that dropped an anchor; Fact-Citation Alignment is 52/52 and none does.
 * **`telemetry_logged` reports one append attempt.** It does not prove the record
   is still on disk, and nothing detects a sink truncated between runs. The
   bounded reader counts malformed lines inside the read window only.
@@ -540,11 +605,117 @@ These are the rest — real, and narrower.
 |---|---|---|
 | `Retriever` protocol | character TF-IDF | see the escalation table below |
 | Retrieval unit | whole document | chunking with hierarchical citation IDs |
-| Scope gate | closed alias catalog | facet-based gate, default-deny on eligibility, coverage metadata in document frontmatter |
+| Scope gate | closed alias catalog | facet-based gate, default-deny on eligibility, coverage metadata in document frontmatter — [sketched below](#facet-based-scope-gate) |
 | Answer validation | provenance + coverage + numeric consistency + fact containment | claim entailment model or LLM-as-judge faithfulness pass |
 | `config.py` | env vars | secret manager, per-tenant configuration |
 | `logging_utils` | JSONL file | structured logging → OpenTelemetry → warehouse, with PII redaction and retention |
 | Guardrail module | regex screen | layered classifier + policy engine + indirect-injection defences |
 | Entry points | CLI + Streamlit | FastAPI service, authn/authz, per-user document ACLs |
-| Policy lifecycle | `status: active` flag | `effective_from/to`, `owner`, `version`, `supersedes`; startup fails on conflicting active policies |
+| Policy lifecycle | `status: active` flag | `effective_from/to`, `owner`, `version`, `supersedes`; startup fails on conflicting active policies — [sketched below](#policy-lifecycle-governance) |
 | Evaluation | static JSON sets | CI-gated regression suite, production sampling |
+
+---
+
+## Production sketches — designed, not built
+
+Two production steps are specified far enough here that building them is
+engineering rather than design, and are then deliberately **not** built. Both
+would change how requests are refused, which means re-calibrating a gate the
+whole precision story rests on; a prototype that ships the sketch and keeps the
+measured behaviour is more honest than one that ships a bigger mechanism nobody
+has calibrated.
+
+### Facet-based scope gate
+
+The scope gate today is a closed alias catalog per *topic*. Its known hole is
+stated in [section 6 of the README](../README.md#6-scope-and-what-a-citation-proves):
+an expense item nobody thought to list can still reach the answer route on the
+reimbursement **process** policy, which explains how to file a claim and says
+nothing about which items qualify. Seventeen unsupported topics are listed by
+hand today, and every one of them was added after somebody noticed the hole it
+left.
+
+The production shape replaces "which topic is this about" with "which *facet*
+does this ask for", and defaults eligibility to deny:
+
+```yaml
+# data/docs/FIN-001_expense_process.md frontmatter, extended
+covers:
+  - facet: reimbursement.filing_procedure     # how to file
+    kind: procedure
+  - facet: reimbursement.taxi_after_ot        # this item is claimable
+    kind: eligibility
+  - facet: reimbursement.parking_client_visit
+    kind: eligibility
+```
+
+* **Facets, not topics.** `reimbursement.taxi_after_ot`,
+  `receipt.missing_receipt_exception`, `annual_leave.notice_period`,
+  `sick_leave.medical_certificate_threshold`, `wfh.days_per_week`. A facet is
+  one question a document actually answers, so coverage becomes a property of
+  the corpus rather than a list maintained beside it.
+* **Default-deny on eligibility.** A question classified as *eligibility* whose
+  facet no active document declares is refused, whatever it scores. That is the
+  rule the current catalog approximates by naming the seventeen items it happens
+  to know about; it is also the rule that removes the maintenance burden, since
+  a new expense item is refused by default instead of by being remembered.
+* **Procedure questions keep the current behaviour.** "How do I file a claim" is
+  answerable from the process policy for any item, and must not inherit the
+  eligibility default, or the assistant stops being useful.
+* **The classifier is the hard part.** Separating eligibility from procedure is
+  a second deterministic gate at minimum, and it is where the design would first
+  need labelled data — the current catalog needs none.
+
+**What would trigger building it.** Any one of: the unsupported catalog passing
+roughly thirty entries, or needing an edit more than once a month; the corpus
+passing roughly fifty documents, where per-item aliases stop being reviewable;
+or one near-domain miss reaching production — an eligibility question answered
+from a process document, which the `scope_topics` field now in the JSONL sink
+makes visible in the log rather than only in an eval set.
+
+**Why it is not in this repository.** It re-calibrates `SCOPE_MATCH_THRESHOLD`
+across the whole system and puts Benign Pass Rate at risk, and the measured
+alternative already holds: 14/14 near-domain hard negatives refused with 6/6
+benign twins still answered. Shipping an uncalibrated gate to close a hole the
+current one demonstrably closes on the measured set would trade evidence for
+architecture.
+
+### Policy lifecycle governance
+
+`status: active` is the whole lifecycle model today: a retired document stays in
+the corpus for provenance and never supports an answer. That is enough for eight
+documents written on one day and nothing like enough for a real policy set, where
+the dangerous failure is not a missing rule but **two rules that both look
+current**.
+
+```yaml
+# frontmatter, extended
+version: 3
+effective_from: 2026-01-01
+effective_to: null          # null = still in force
+owner: hr-policy@example.com
+supersedes: HR-001@v2
+```
+
+* **`effective_from` / `effective_to`** turn "active" into a question about a
+  date rather than a flag somebody has to remember to flip. A request answered
+  today must not cite a policy that took effect tomorrow.
+* **`supersedes`** makes replacement explicit, so the retired version stays
+  citable for an audit of a past decision without being reachable by a new one.
+* **`owner`** is who to ask when two documents disagree — the field that makes
+  the conflict actionable rather than merely detected.
+* **Start-up validation, not runtime.** Two active documents covering the same
+  facet with overlapping effective dates is a corpus defect, and the loader
+  already fails the import on duplicate ids and missing titles
+  ([`src/ingestion/loader.py`](../src/ingestion/loader.py)). This belongs in the
+  same place: a deployment that cannot decide which rule is current should not
+  start, rather than answer half its requests from the old one.
+* **A corpus checksum per deployment.** `eval/RESULTS.md` already records the
+  SHA-256 of `data/docs/*.md` for the measured run, which is how a reader knows
+  which corpus a metric describes. In production the same digest belongs in the
+  telemetry of every request, so an answer can be tied to the exact corpus that
+  produced it after the corpus has moved on.
+
+**What would trigger building it.** The first real policy update — that is, the
+first time a document is replaced rather than added. Until then there is no
+lifecycle to govern, and the fields would be metadata nobody maintains.

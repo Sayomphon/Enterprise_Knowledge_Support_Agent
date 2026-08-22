@@ -192,6 +192,35 @@ FINAL_ANSWER_THRESHOLD: float = _env_float("FINAL_ANSWER_THRESHOLD", "0.21")
 # into a supported topic at this threshold.
 SCOPE_MATCH_THRESHOLD: float = _env_float("SCOPE_MATCH_THRESHOLD", "0.40")
 
+# Floor under the "under-specified" verdict, calibrated 2026-08-22 on the
+# 25-case calibration set, the 20-case near-domain set, and 23 additional
+# probe queries (out-of-domain and under-specified) that were NOT added
+# to any fixture. It answers a different question from the threshold
+# above: not "does this query name a supported topic" but "does it touch
+# more than one of them without naming any" -- the shape of "how many
+# days of leave can I take", which names no leave type.
+#
+# The separating quantity is the SECOND-best topic score, because one
+# partial match is a coincidence and two are a genuine ambiguity. Among
+# the queries the gate refuses, the strongest second-best score of an
+# out-of-domain query is 0.0833 (cal_ood_01, and the Bitcoin probe),
+# while the under-specified calibration case cal_unsupported_05 scores
+# 0.1333. 0.11 is the midpoint of that gap, rounded. The cost is
+# explicit and precision-first: a query such as "what documents do I
+# need" sits just under the floor at 0.1034 and keeps the generic
+# unsupported wording, which is the direction to fail in -- telling an
+# out-of-domain asker to name their leave type is worse than telling an
+# under-specified one nothing.
+#
+# Held-out data was not consulted for this number. Its scope scores were
+# visible in the same probe that produced the table above, so that is
+# recorded rather than left implicit; the value is derived only from the
+# tuning split and the probes, and the held-out set was run once
+# afterwards (eval/BASELINE.md, Phase 11).
+SCOPE_AMBIGUOUS_MIN_SCORE: float = _env_float(
+    "SCOPE_AMBIGUOUS_MIN_SCORE", "0.11"
+)
+
 # Rewrite lexical continuity, calibrated 2026-08-20 against the labelled
 # pairs in eval/rewrite_cases.json with character (2,4) Jaccard overlap.
 # Valid normalizations score 0.0756 (a mixed-language Work From Home
@@ -265,6 +294,9 @@ _require_unit_interval("DIRECT_ANSWER_THRESHOLD", DIRECT_ANSWER_THRESHOLD)
 _require_unit_interval("FINAL_ANSWER_THRESHOLD", FINAL_ANSWER_THRESHOLD)
 _require_unit_interval("SCOPE_MATCH_THRESHOLD", SCOPE_MATCH_THRESHOLD)
 _require_unit_interval(
+    "SCOPE_AMBIGUOUS_MIN_SCORE", SCOPE_AMBIGUOUS_MIN_SCORE
+)
+_require_unit_interval(
     "REWRITE_CONTINUITY_THRESHOLD", REWRITE_CONTINUITY_THRESHOLD
 )
 if REWRITE_FLOOR > DIRECT_ANSWER_THRESHOLD:
@@ -278,6 +310,14 @@ if FINAL_ANSWER_THRESHOLD < DIRECT_ANSWER_THRESHOLD:
         "the expanded score is max-pooled over the original query plus its "
         "rewrites, so a lower final gate would let the rewrite branch answer "
         "queries the direct branch already refused on the same score"
+    )
+if SCOPE_AMBIGUOUS_MIN_SCORE >= SCOPE_MATCH_THRESHOLD:
+    raise ValueError(
+        "SCOPE_AMBIGUOUS_MIN_SCORE must sit below SCOPE_MATCH_THRESHOLD; "
+        "the under-specified band lies between them, and at or above the "
+        "match threshold a topic is resolved rather than ambiguous, so "
+        "the band would be empty and no query could ever be reported as "
+        "under-specified"
     )
 if TOP_K <= 0:
     raise ValueError("TOP_K must be greater than zero")

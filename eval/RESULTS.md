@@ -15,9 +15,9 @@ offline, free, and reproducible byte for byte.
 | Item | Value |
 |---|---|
 | Date run | 2026-08-22 |
-| Git commit | `2377ea2c980d9c67bd823d058ab3536954f7ebc3` plus the uncommitted P1-1 to P1-6 working tree |
+| Git commit | `85293cc09eba5d95a5f94c2f98af73f22f85c925` plus the uncommitted P2-1 to P2-8 working tree |
 | Python | 3.11.15 |
-| Configuration | committed defaults: `.env.example` values, `FINAL_ANSWER_THRESHOLD=0.21`, `REQUEST_DEADLINE_SECONDS=45` |
+| Configuration | committed defaults: `.env.example` values, `FINAL_ANSWER_THRESHOLD=0.21`, `REQUEST_DEADLINE_SECONDS=45`, `SCOPE_AMBIGUOUS_MIN_SCORE=0.11` |
 | LLM model used | **none.** The harness makes no provider call in any set below. Medium-band expansion first searches deterministic topic-alias variants; only if those miss does it replay `eval/cached_rewrites.json`, and a query absent from that cache is scored as a failed rewrite and reported as a cache miss. |
 | `OPENAI_API_KEY` | empty — every number below was produced with no credential visible to the process |
 | Corpus checksum | `c3590bc79096fed9c0c24a9401872fc3189414b25667c10905d229f840c0e487`, the SHA-256 of `data/docs/*.md` concatenated in sorted filename order (unchanged since the previous run) |
@@ -31,28 +31,31 @@ offline, free, and reproducible byte for byte.
 | Contract fixtures | `eval/citation_cases.json` + `eval/rewrite_cases.json` | 23 + 20 |
 | Live answer quality | `eval/answer_cases.json` | 17 — see `eval/ANSWER_RESULTS.md` |
 
-**This file supersedes the run recorded at commit `2377ea2`.** Four things
-changed since then and all four are visible below.
+**This file supersedes the run recorded at commit `85293cc`.** Three things
+changed since then. **No fixture changed**, so every metric here is comparable
+case-for-case with that run, and exactly one line of output moved.
 
-1. **The answer contract gained a numeric rule.** Every number and clock time a
-   claim states must appear in a document that claim cites, or in the question;
-   otherwise the request degrades as `unsupported_numeric_claim`. The citation
-   fixture grew from 19 to 23 cases to cover it — a figure absent from the cited
-   evidence, a figure the employee supplied, and a clock time in both
-   directions.
-2. **Four receipt-slang cases** joined the calibration split, taking it from 21
-   to 25. They were added because a paraphrased receipt question is the shape
-   the held-out coverage miss belongs to, and one case's shape is not evidence
-   of a gap; the group is.
-3. **Two aliases from `FIN-002`'s own wording** — "financial evidence" and
-   "documents supporting a claim" — joined the receipt topic. That is the whole
-   change behind calibration coverage moving from 15/16 to 16/16: no threshold
-   and no index parameter was touched. The ablation that rejected the
-   alternatives is in `eval/BASELINE.md`.
-4. **A per-request deadline** now bounds both LLM boundaries, and answers are
-   capped at six claims. Neither is visible in these offline numbers — the
-   harness calls no provider — which is why the wall-clock evidence for it lives
-   in `eval/ANSWER_RESULTS.md`.
+1. **A new reason code, `ambiguous_topic`.** A query that touches two supported
+   topics above `SCOPE_AMBIGUOUS_MIN_SCORE` without resolving either is now
+   reported as under-specified rather than as an unsupported topic, and is
+   answered with a request to name the leave or expense type. `cal_unsupported_05`
+   (`ลาได้กี่วัน`, "how many days of leave can I take") is the one case that
+   moves; its **route does not**, so no rate below changes. How the floor was
+   calibrated, and the false negative it accepts, is in `eval/BASELINE.md`
+   (Phase 11).
+2. **Two fields joined every JSONL record**, `scope_topics` and `scope_reason`.
+   They carry the scope gate's own verdict beside the routing reason, so an
+   in-domain question stopped by its score can be grouped by topic without that
+   routing decision being changed to suit a report. Telemetry only; invisible in
+   every metric here.
+3. **A typo-perturbation sweep**, `--perturb`, reported at the end of this file.
+   It turns the "character n-grams tolerate typos" claim from two anecdotal
+   fixture cases into a measured degradation curve. It is reporting only and
+   never changes an exit code.
+
+The supported-topic line now printed in the fallback text, the reason-family
+mapping behind the console's triage panel, and the opt-in live smoke test also
+landed this round; none of them is measurable offline.
 
 ## Commands
 
@@ -71,16 +74,25 @@ python eval/run_eval.py --set near_domain --strict   # exit 0
 python eval/run_eval.py --set guardrail --strict     # exit 0
 python eval/run_eval.py --set contracts --strict     # exit 0
 python eval/run_eval.py --set heldout --strict       # exit 1, on the known miss
+
+# Reporting-only sweep, valid on any retrieval set; never changes the exit code
+python eval/run_eval.py --set calibration --perturb
 ```
 
 ## Offline unit tests
 
 ```text
 ----------------------------------------------------------------------
-Ran 431 tests in 1.406s
+Ran 484 tests in 2.244s
 
-OK
+OK (skipped=5)
 ```
+
+The five skipped tests are `tests/live/test_live_smoke.py`, which reaches a real
+provider and skips itself unless `RUN_LIVE_SMOKE=1` is set **and** a credential
+is configured. The default suite stays offline and free; a skipped run is not a
+passed one, so it was run once on its own and the result is at the end of this
+file.
 
 ## Calibration set — tuning split, not generalisation evidence
 
@@ -111,7 +123,7 @@ thresholds: REWRITE_FLOOR=0.1, DIRECT_ANSWER_THRESHOLD=0.19, FINAL_ANSWER_THRESH
   cal_unsupported_02 unsupported raw=0.1814 band=medium predicted=fallback expected=fallback ok reason=unsupported_topic [rewrite-cache MISS: original-only expansion]
   cal_unsupported_03 unsupported raw=0.1884 band=medium predicted=fallback expected=fallback ok reason=unsupported_topic [rewrite-cache MISS: original-only expansion]
   cal_unsupported_04 unsupported raw=0.0960 band=low    predicted=fallback expected=fallback ok reason=low_retrieval_score
-  cal_unsupported_05 unsupported raw=0.0737 band=low    predicted=fallback expected=fallback ok reason=low_retrieval_score
+  cal_unsupported_05 unsupported raw=0.0737 band=low    predicted=fallback expected=fallback ok reason=ambiguous_topic
   cal_noisy_06       noisy       raw=0.1555 expanded=0.2144 band=medium predicted=answered expected=answered ok
   cal_noisy_07       noisy       raw=0.1551 expanded=0.2779 band=medium predicted=answered expected=answered ok
   cal_normal_06      normal      raw=0.2070 band=high   predicted=answered expected=answered ok
@@ -304,6 +316,87 @@ retrieval run; only the printing moved.
   Rewrite Intent Preservation Rate:   1.000 (20/20)
 ```
 
+## Typo-perturbation sweep — reporting only
+
+`--perturb` re-runs each correctly-spelled answerable query with one, two and
+three single-character Thai typos injected under a fixed seed, and prints Hit@3
+beside the route the pipeline took. The `noisy` fixtures are excluded because
+they are already misspelled, so their level-0 column would not be the clean
+baseline the curve is measured against. It never changes an exit code: the
+probes carry no labels of their own.
+
+```text
+-- typo-perturbation robustness (seed 42, n=7 correctly-spelled answerable cases, one probe per case per level) --
+  perturbations=0  Hit@3: 1.000 (7/7)  routed answered: 1.000 (7/7)
+  perturbations=1  Hit@3: 1.000 (7/7)  routed answered: 1.000 (7/7)
+  perturbations=2  Hit@3: 1.000 (7/7)  routed answered: 1.000 (7/7)
+  perturbations=3  Hit@3: 1.000 (7/7)  routed answered: 0.857 (6/7)
+```
+
+```text
+-- typo-perturbation robustness (seed 42, n=5 correctly-spelled answerable cases, one probe per case per level) --
+  perturbations=0  Hit@3: 1.000 (5/5)  routed answered: 1.000 (5/5)
+  perturbations=1  Hit@3: 1.000 (5/5)  routed answered: 0.800 (4/5)
+  perturbations=2  Hit@3: 1.000 (5/5)  routed answered: 0.800 (4/5)
+  perturbations=3  Hit@3: 1.000 (5/5)  routed answered: 0.800 (4/5)
+```
+
+```text
+-- typo-perturbation robustness (seed 42, n=4 correctly-spelled answerable cases, one probe per case per level) --
+  perturbations=0  Hit@3: 1.000 (4/4)  routed answered: 1.000 (4/4)
+  perturbations=1  Hit@3: 1.000 (4/4)  routed answered: 1.000 (4/4)
+  perturbations=2  Hit@3: 1.000 (4/4)  routed answered: 1.000 (4/4)
+  perturbations=3  Hit@3: 1.000 (4/4)  routed answered: 1.000 (4/4)
+```
+
+The three blocks are calibration, near-domain and held-out, in that order.
+**Hit@3 does not move on any split**: three injected typos still leave an
+expected source in the top three every time. What moves is the route — one
+calibration case at three typos, one near-domain case from the first typo — where
+the score falls under a threshold while the right document is still retrieved.
+That is the pipeline preferring a fallback to an answer it is no longer confident
+in, and it is also the honest limit of the measurement: n is 4 to 7 per split
+with one probe per level, so this shows that the index degrades gracefully, not
+by how much.
+
+## Live smoke test — the one test that reaches a provider
+
+`tests/live/test_live_smoke.py` sends one high-band question
+(`ทำงานจากที่บ้านได้สัปดาห์ละกี่วัน`, raw 0.2752) to the configured provider and
+asserts the answer contract on what comes back. It skips unless both
+`RUN_LIVE_SMOKE=1` and a credential are set, which is why the default suite
+reports it as skipped; the whole class shares one request, so running it costs
+one provider call.
+
+**Run once on 2026-08-22 against `gpt-5-mini`, with approval, and it passed:**
+
+```text
+$ RUN_LIVE_SMOKE=1 python -m unittest tests.live.test_live_smoke -v
+test_every_citation_belongs_to_this_request_s_evidence ... ok
+test_no_unvalidated_draft_leaves_the_graph ... ok
+test_the_answer_rests_on_at_least_one_policy ... ok
+test_the_rendered_answer_carries_its_citation_markup ... ok
+test_the_request_reaches_a_validated_answer ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 9.149s
+
+OK
+```
+
+What those five assertions establish about the live path, which no mocked test
+can: the request reached route `answered` with a non-empty rendered answer; every
+validated citation was inside this request's own answer evidence; the renderer's
+`[SOURCE-ID]` markup was present for each of them; at least one authoritative
+policy stood behind the answer; and the state carried no `fallback_reason` and
+exactly one `llm_calls`. 9.1 seconds is the whole class including corpus load and
+index build, against a 45-second request deadline.
+
+The answer text itself is not recorded here. It is model output and varies
+between runs, so quoting one sample would read as a fixed expectation; what is
+fixed is the contract above. `eval/ANSWER_RESULTS.md` is where live answers are
+actually scored, against fact anchors taken from the corpus.
+
 ## What these numbers do not measure
 
 * **Answer correctness is measured elsewhere.** Every metric in this file scores
@@ -324,3 +417,7 @@ retrieval run; only the printing moved.
 * **`Claim Source Coverage Rate`** describes the labelled citation fixture,
   which deliberately mixes grounded and ungrounded claims. It is not a
   measurement of live Reporter behaviour.
+* **The perturbation sweep is a shape, not a rate.** One probe per case per
+  level, four to seven cases per split, and a perturber that only transposes,
+  deletes, or swaps a Thai tone mark. A production version would draw many
+  probes per level and report an interval.

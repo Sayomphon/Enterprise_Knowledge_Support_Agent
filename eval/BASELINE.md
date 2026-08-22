@@ -987,3 +987,161 @@ out of scope for this round and would need its own sweep.
 
 Nothing was moved to close the case. The threshold change that would close it
 readmits the unsupported in-domain cases the scope gate exists to refuse.
+
+---
+
+# Phase 11 snapshot — P2 production next steps (2026-08-22)
+
+Recorded after P2-1 to P2-8: the dropped-anchor diagnostic, the scope verdict in
+the JSONL record with its reason-family mapping, the `ambiguous_topic` reason
+code, the typo-perturbation sweep, the opt-in live smoke test, the supported-topic
+line in the fallback text, and two production design sketches.
+
+No fixture changed this round, so every metric below is comparable case-for-case
+with the Phase 10 block above. One reason code moved and no route did.
+
+## What changed in the pipeline
+
+| Change | Where | Visible as |
+|---|---|---|
+| `dropped_anchor_count` on the rewrite validation result | `src/schemas.py`, `src/guardrails/rewrite_validator.py` | diagnostic only; no rule changed, value is 0 on every shipped fixture |
+| `scope_topics` / `scope_reason` in every JSONL record | `src/logging_utils.py`, `src/graph.py` | telemetry only; `reason` keeps its meaning exactly |
+| `reason_family()` over all 21 codes, used by the console triage panel | `src/fallback.py`, `ui/formatting.py` | grouping only; the codes never collapse |
+| New reason code `ambiguous_topic` with its own fixed text | `src/config.py`, `src/guardrails/scope_validator.py`, `src/fallback.py`, `src/graph.py` | `cal_unsupported_05` moves from `low_retrieval_score`; its route does not move |
+| Supported topics named in the shared fallback text | `src/fallback.py` | wording only, on both surfaces at once |
+| `--perturb` sweep in the harness | `eval/run_eval.py` | reporting only; never changes an exit code |
+| Opt-in live smoke test | `tests/live/` | skipped by default; run once against `gpt-5-mini` and passed |
+
+## Calibrating `SCOPE_AMBIGUOUS_MIN_SCORE`
+
+The new gate answers a different question from `SCOPE_MATCH_THRESHOLD`: not "does
+this query name a supported topic" but "does it touch more than one of them
+without naming any". The separating quantity is therefore the **second-best**
+topic score — one partial match is a coincidence, two are an ambiguity.
+
+Measured on the 25-case calibration split, the 20-case near-domain split, and 23
+additional probe queries that were **not** added to any fixture, over the queries
+the gate refuses without the unsupported catalog claiming them first:
+
+```text
+                                     best    second   verdict at floor 0.11
+cal_unsupported_05  ลาได้กี่วัน      0.1667   0.1333   ambiguous   <- the target
+probe               ลากี่วัน         0.1667   0.1333   ambiguous
+probe               ต้องใช้เอกสารอะไรบ้าง 0.2400   0.1034   unsupported <- false negative
+cal_ood_01          Bitcoin price    0.1333   0.0833   unsupported
+probe               how do I reset…  0.1333   0.0606   unsupported
+cal_ood_02          football kickoff 0.1429   0.0345   unsupported
+cal_ood_03          tom yum recipe   0.0476   0.0370   unsupported
+  ... 12 further out-of-domain probes, all with a second-best score <= 0.0833
+```
+
+0.11 is the midpoint of the gap between the strongest out-of-domain second-best
+score (**0.0833**) and the target case's (**0.1333**), rounded. The direction of
+the remaining error is deliberate: "what documents do I need" at 0.1034 sits just
+under the floor and keeps the generic wording, because telling an out-of-domain
+asker to name their leave type is a worse answer than telling an under-specified
+one nothing.
+
+Held-out data was not consulted for the number. Its scope scores were visible in
+the same probe that produced this table, which is recorded here rather than left
+implicit; the floor is derived from the tuning split and the probes alone, and
+the held-out set was then run once. On it, `ho_ood_01` has a second-best score of
+0.1053 and keeps `low_retrieval_score`, so no held-out case moved.
+
+## Measured results
+
+```text
+Offline unit tests: 484 passed, 5 skipped (the live smoke test, opt-in)
+
+Calibration (25 cases), strict exit 0:
+  Retrieval Hit@3                          16/16
+  Retrieval Recall@1                       15/16
+  Retrieval MRR 0.969, best expected source
+  Answer-route Selection Precision         16/16
+  Answer-route Coverage                    16/16
+  False Fallback Rate                       0/16
+  OOD Fallback Accuracy                      4/4
+  Unsupported In-domain Fallback Accuracy    5/5
+  Overall Fallback Accuracy                  9/9
+  Authoritative Evidence Coverage Rate     16/16
+  Rewrite Recovery Rate                      6/6
+  every metric unchanged from Phase 10; cal_unsupported_05 changed reason
+  code from low_retrieval_score to ambiguous_topic and kept its route
+
+Near-domain (20 cases), strict exit 0:
+  Retrieval Hit@3                            6/6
+  Retrieval Recall@1                         5/6
+  Answer-route Selection Precision           6/6
+  Answer-route Coverage                      6/6
+  Unsupported In-domain Fallback Accuracy  14/14
+  Rewrite Recovery Rate                      2/2
+  no case changed route or reason code
+
+Guardrail (42 cases), strict exit 0:
+  Injection Block Rate                     21/21
+  Benign Pass Rate                         21/21
+
+Contracts (43 cases), strict exit 0:
+  Citation Provenance Validity Rate        23/23
+  Claim Source Coverage Rate               20/24
+  Invalid Candidate Leakage Rate            0/17
+  Rewrite Intent Preservation Rate         20/20
+
+Held-out (14 cases), strict exit 1 -- run once, after the new floor froze:
+  Retrieval Hit@3                            7/7
+  Retrieval Recall@1                         7/7
+  Retrieval MRR 1.000, best expected source
+  Answer-route Selection Precision           6/6
+  Answer-route Coverage                      6/7   <- the one gate failure
+  False Fallback Rate                        1/7
+  OOD Fallback Accuracy                      3/3
+  Unsupported In-domain Fallback Accuracy    4/4
+  Overall Fallback Accuracy                  7/7
+  Authoritative Evidence Coverage Rate       6/6
+  Rewrite Recovery Rate                      1/2
+  ho_noisy_03 still 0.1986 against 0.21, unchanged from Phase 10
+
+Live smoke test (opt-in, run once on 2026-08-22, gpt-5-mini, 1 provider call):
+  5 assertions passed in 9.149s -- route answered, citations inside this
+  request's evidence, [SOURCE-ID] markup rendered, one authoritative policy
+  behind the answer, no fallback_reason, llm_calls == 1
+
+Typo-perturbation sweep (seed 42, one probe per case per level,
+correctly-spelled answerable cases only):
+  calibration  n=7   Hit@3 7/7, 7/7, 7/7, 7/7   routed answered 7/7, 7/7, 7/7, 6/7
+  near-domain  n=5   Hit@3 5/5, 5/5, 5/5, 5/5   routed answered 5/5, 4/5, 4/5, 4/5
+  held-out     n=4   Hit@3 4/4, 4/4, 4/4, 4/4   routed answered 4/4, 4/4, 4/4, 4/4
+  columns are 0, 1, 2 and 3 injected single-character typos
+```
+
+Commands used:
+
+```bash
+OPENAI_API_KEY= python -m unittest discover -s tests
+OPENAI_API_KEY= python eval/run_eval.py --set calibration --strict --perturb
+OPENAI_API_KEY= python eval/run_eval.py --set near_domain --strict --perturb
+OPENAI_API_KEY= python eval/run_eval.py --set guardrail --strict
+OPENAI_API_KEY= python eval/run_eval.py --set contracts --strict
+OPENAI_API_KEY= python eval/run_eval.py --set heldout --strict --perturb
+# the one command here that spends money, run once with approval
+RUN_LIVE_SMOKE=1 python -m unittest tests.live.test_live_smoke -v
+```
+
+## What the perturbation sweep does and does not show
+
+Hit@3 does not move at all: three injected typos leave every correctly-spelled
+answerable query still retrieving an expected source on all three splits. That is
+the character n-gram claim measured rather than asserted from the two fixture
+cases that used to carry it.
+
+What does move is the **route**. Calibration loses one case at three typos and
+near-domain one from the first typo onwards: the score falls below a threshold
+even though the right document is still in the top three. That is the pipeline
+behaving as designed — a degraded query gets a fallback rather than an answer
+from evidence it is no longer confident in — and it is also the honest limit of
+this measurement.
+
+The sample is small (n=4 to 7 per split, one probe per level) and the perturber
+is crude: transpose, delete, or swap a Thai tone mark. It answers "does the index
+degrade gracefully", not "by how much". A production version would draw many
+probes per level and report a confidence interval.

@@ -13,6 +13,7 @@ from __future__ import annotations
 import unittest
 
 from src import config
+from src.fallback import ReasonCode, ReasonFamily
 from src.schemas import RetrievedDocument
 from ui.formatting import (
     _axis_position,
@@ -24,8 +25,10 @@ from ui.formatting import (
     _log_matches,
     _score_band,
     _trace_rows,
+    _triage_row_html,
 )
-from ui.labels import SCORE_BAR_CEILING
+from ui.labels import REASON_FAMILY_TAGS, SCORE_BAR_CEILING
+from ui.styles import _CONSOLE_LAYOUT_CSS
 
 
 def _policy_evidence() -> RetrievedDocument:
@@ -201,6 +204,60 @@ class TestLogFiltering(unittest.TestCase):
         self.assertTrue(_log_matches(record, "unsupported"))
         self.assertTrue(_log_matches(record, "ลาพัก"))
         self.assertFalse(_log_matches(record, "fabricated"))
+
+
+class TestTriageRows(unittest.TestCase):
+    """Triage rows are coloured by reason family, not by guesswork."""
+
+    def test_every_family_has_a_tag_and_a_stylesheet_rule(self) -> None:
+        # The chip is drawn from a modifier string, so a family without
+        # a tag would render as an unstyled word and a tag without a
+        # rule as an uncoloured one. Both are silent in a screenshot.
+        self.assertEqual(set(REASON_FAMILY_TAGS), set(ReasonFamily))
+        for label, modifier in REASON_FAMILY_TAGS.values():
+            with self.subTest(tag=label):
+                self.assertIn(
+                    f".araya-triage-tag--{modifier} ", _CONSOLE_LAYOUT_CSS
+                )
+
+    def test_a_knowledge_gap_is_not_drawn_as_an_attack(self) -> None:
+        row = _triage_row_html(
+            ReasonCode.LOW_RETRIEVAL_SCORE, 3, "ลาได้กี่วัน", ReasonFamily.KNOWLEDGE_GAP
+        )
+
+        self.assertIn("araya-triage-tag--knowledge", row)
+        self.assertIn("araya-triage-count--amber", row)
+        self.assertIn("knowledge gap", row)
+
+    def test_a_rejected_input_keeps_the_red_count(self) -> None:
+        row = _triage_row_html(
+            ReasonCode.PROMPT_INJECTION,
+            1,
+            "ignore previous instructions",
+            ReasonFamily.SECURITY_OR_INVALID_INPUT,
+        )
+
+        self.assertIn("araya-triage-tag--input", row)
+        self.assertIn("araya-triage-count--red", row)
+
+    def test_an_unclassified_code_is_still_shown(self) -> None:
+        # Dropping the row would hide exactly the requests a missing
+        # family mapping should be making obvious.
+        row = _triage_row_html("some_future_reason", 2, "ลาได้กี่วัน", None)
+
+        self.assertIn("some_future_reason", row)
+        self.assertIn("unclassified", row)
+
+    def test_the_query_is_escaped_before_it_reaches_the_markup(self) -> None:
+        row = _triage_row_html(
+            ReasonCode.LOW_RETRIEVAL_SCORE,
+            1,
+            "<script>alert(1)</script>",
+            ReasonFamily.KNOWLEDGE_GAP,
+        )
+
+        self.assertNotIn("<script>", row)
+        self.assertIn("&lt;script&gt;", row)
 
 
 if __name__ == "__main__":

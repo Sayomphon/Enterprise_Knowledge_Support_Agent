@@ -155,12 +155,83 @@ class TestUnsupportedTopics(unittest.TestCase):
         decision = validate_scope(UNDER_SPECIFIED_QUERY)
 
         self.assertFalse(decision.supported)
-        self.assertEqual(decision.reason, "unsupported_topic")
+        self.assertEqual(decision.reason, "ambiguous_topic")
 
     def test_out_of_domain_question_is_not_supported(self) -> None:
         decision = validate_scope(OUT_OF_DOMAIN_QUERY)
 
         self.assertFalse(decision.supported)
+        self.assertEqual(decision.reason, "unsupported_topic")
+
+
+class TestAmbiguousTopics(unittest.TestCase):
+    """Under-specified questions are separated from unanswerable ones.
+
+    Both verdicts refuse the request, so nothing here is about routing:
+    it is about which of two sentences the employee reads, and asking an
+    out-of-domain asker to name their leave type would be the worse of
+    the two mistakes. The tests are therefore paired -- one query that
+    must earn the new code, and the neighbours that must not.
+    """
+
+    def test_a_question_touching_two_topics_is_reported_as_ambiguous(
+        self,
+    ) -> None:
+        # "ลา" is shared by the annual-leave and sick-leave aliases, so
+        # this query brushes both and resolves neither.
+        decision = validate_scope(UNDER_SPECIFIED_QUERY)
+
+        self.assertEqual(decision.reason, "ambiguous_topic")
+        # A near match is not a resolved topic: publishing one here
+        # would put a refused topic into the alias expansion and the
+        # telemetry alike.
+        self.assertEqual(decision.topics, ())
+
+    def test_out_of_domain_questions_keep_the_unsupported_code(
+        self,
+    ) -> None:
+        # The benign-lookalike half of the pair. Each of these brushes at
+        # most one topic by accident, which is what the second-topic rule
+        # exists to distinguish from an unfinished question.
+        for label, query in (
+            ("crypto price", OUT_OF_DOMAIN_QUERY),
+            ("football", "แมนยูคืนนี้เตะกี่โมง"),
+            ("recipe", "วิธีทำต้มยำกุ้งให้อร่อย"),
+            ("laptop", "how do I reset my laptop"),
+        ):
+            with self.subTest(case=label):
+                decision = validate_scope(query)
+
+                self.assertEqual(decision.reason, "unsupported_topic")
+
+    def test_a_named_unsupported_topic_is_never_called_ambiguous(
+        self,
+    ) -> None:
+        # The corpus has no ordination-leave policy, and the question is
+        # perfectly specific. Asking this employee to be more precise
+        # would be a worse answer than admitting the gap.
+        decision = validate_scope("ลาบวชต้องแจ้งล่วงหน้ากี่วัน")
+
+        self.assertEqual(decision.reason, "unsupported_topic")
+
+    def test_a_resolved_topic_is_never_called_ambiguous(self) -> None:
+        # The same question with the leave type named. It must answer,
+        # not ask again.
+        decision = validate_scope("ลาพักร้อนได้กี่วัน")
+
+        self.assertTrue(decision.supported)
+        self.assertIsNone(decision.reason)
+
+    def test_raising_the_floor_above_the_second_topic_removes_the_verdict(
+        self,
+    ) -> None:
+        # Pins the rule to the score rather than to the wording: with the
+        # floor above the second topic's score the same query is a
+        # single accidental match again.
+        decision = validate_scope(
+            UNDER_SPECIFIED_QUERY, ambiguous_min_score=0.14
+        )
+
         self.assertEqual(decision.reason, "unsupported_topic")
 
 

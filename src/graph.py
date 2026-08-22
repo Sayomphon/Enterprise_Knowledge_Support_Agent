@@ -465,11 +465,20 @@ def build_graph(
         }
         if not decision.supported:
             updates["scope_reason"] = decision.reason
+            if decision.reason == ReasonCode.AMBIGUOUS_TOPIC:
+                # Unlike the verdict below, this one is not gated on the
+                # band. An under-specified question is short and vague,
+                # so it nearly always scores low, and behind the band
+                # gate this code could never be recorded at all. It also
+                # earns the exception on its own terms: it changes what
+                # the employee is told -- name the leave type -- rather
+                # than only what the log calls the same refusal.
+                updates["fallback_reason"] = ReasonCode.AMBIGUOUS_TOPIC.value
             # A clearly out-of-domain question already falls back on the
             # low band and keeps its historical reason code. The scope
             # gate earns its reason code on in-domain hard negatives,
             # whose score would otherwise buy them an answer.
-            if state["raw_retrieval_score"] >= config.REWRITE_FLOOR:
+            elif state["raw_retrieval_score"] >= config.REWRITE_FLOOR:
                 updates["fallback_reason"] = ReasonCode.UNSUPPORTED_TOPIC.value
         # Policy coverage is NOT checked here. It used to be, to save the
         # rewrite branch an LLM call when no policy covered the topic --
@@ -738,6 +747,14 @@ def build_graph(
             top_sources=_top_source_ids(state),
             rewritten_queries=state.get("rewritten_queries", []),
             alias_query_count=len(state.get("alias_expansion_queries", [])),
+            # The scope verdict travels beside the reason rather than
+            # replacing it. An unsupported question whose raw score never
+            # cleared the rewrite floor is logged as a low score on
+            # purpose -- that is the gate that stopped it -- and these
+            # two fields are what let an operator group by topic anyway,
+            # without a routing rule being rewritten to suit analytics.
+            scope_topics=state.get("scope_topics", []),
+            scope_reason=state.get("scope_reason"),
             # Cost travels with the reason: a deadline record that does
             # not say how long the request took cannot be checked, and a
             # call count separates a rewrite that ran from one that the

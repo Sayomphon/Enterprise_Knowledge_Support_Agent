@@ -76,6 +76,10 @@ OUT_OF_DOMAIN_QUERY = "Bitcoin วันนี้ราคาเท่าไห�
 # maternity-leave or meal-expense rule, but both score close to one.
 UNSUPPORTED_HIGH_QUERY = "ลาคลอดต้องใช้ใบรับรองแพทย์ไหม"
 UNSUPPORTED_MEDIUM_QUERY = "ค่าอาหารระหว่างทำงานเบิกได้ไหม"
+# Names a concept the corpus covers without saying which one: "ลา" is
+# shared by the annual-leave and sick-leave aliases, so the query
+# touches both and resolves neither.
+UNDER_SPECIFIED_QUERY = "ลาได้กี่วัน"
 # Supported topic whose policy is not among the retrieved candidates.
 OFF_TOPIC_EVIDENCE_QUERY = "ลาป่วยต้องแจ้งหัวหน้าภายในกี่โมง"
 REWRITTEN_VARIANT = "เบิกเงินค่าแท็กซี่"
@@ -121,6 +125,8 @@ LOG_SCHEMA_KEYS = [
     "top_sources",
     "rewritten_queries",
     "alias_query_count",
+    "scope_topics",
+    "scope_reason",
     "latency_ms",
     "llm_calls",
 ]
@@ -575,6 +581,85 @@ class TestGraphRoutes(unittest.TestCase):
         self.assertEqual(reporter_seam.call_count, 0)
         self.assertEqual(
             self._log_records()[0]["reason"], "unsupported_topic"
+        )
+
+    def test_the_scope_verdict_reaches_the_log_beside_the_reason(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # A question the corpus covers, refused on its score alone. The
+        # reason stays the score verdict -- that is the gate that
+        # stopped it -- while the resolved topic is what tells an
+        # operator which document the request was reaching for.
+        graph = self._graph([_documents(LOW_SCORE)])
+
+        graph.invoke({"query": NORMAL_QUERY})
+
+        record = self._log_records()[0]
+        self.assertEqual(record["reason"], "low_retrieval_score")
+        self.assertEqual(record["scope_topics"], ["reimbursement_process"])
+        self.assertIsNone(record["scope_reason"])
+
+    def test_a_blocked_request_logs_no_scope_verdict(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # The refusal happens before retrieval, so the gate never ran and
+        # the record must not imply that it did.
+        graph = self._graph([_documents(HIGH_SCORE)])
+
+        graph.invoke({"query": INJECTION_QUERY})
+
+        record = self._log_records()[0]
+        self.assertEqual(record["scope_topics"], [])
+        self.assertIsNone(record["scope_reason"])
+
+    def test_under_specified_question_falls_back_as_ambiguous(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # It routes exactly like any other refusal -- the code changes
+        # what the employee is told, never where the request goes.
+        graph = self._graph([_documents(LOW_SCORE)])
+
+        state: PipelineState = graph.invoke(
+            {"query": UNDER_SPECIFIED_QUERY}
+        )
+
+        self.assertEqual(state["route"], "fallback")
+        self.assertEqual(state["fallback_reason"], "ambiguous_topic")
+        self.assertEqual(state["scope_topics"], [])
+        self.assertEqual(rewriter_seam.call_count, 0)
+        self.assertEqual(reporter_seam.call_count, 0)
+        self.assertNotIn("answer", state)
+
+    def test_the_ambiguous_code_survives_the_low_band(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # The regression this guards: `unsupported_topic` is recorded
+        # only above the rewrite floor, and an under-specified question
+        # is short and vague enough to score below it almost always. If
+        # the new code inherited that gate it could never be logged.
+        graph = self._graph([_documents(LOW_SCORE)])
+
+        state: PipelineState = graph.invoke(
+            {"query": UNDER_SPECIFIED_QUERY}
+        )
+
+        self.assertLess(state["raw_retrieval_score"], config.REWRITE_FLOOR)
+        record = self._log_records()[0]
+        self.assertEqual(record["reason"], "ambiguous_topic")
+        self.assertEqual(record["scope_reason"], "ambiguous_topic")
+
+    def test_an_out_of_domain_question_keeps_the_low_score_reason(
+        self, rewriter_seam: mock.Mock, reporter_seam: mock.Mock
+    ) -> None:
+        # The pair for the two tests above: the new code must not
+        # swallow the historical one for questions that simply are not
+        # about this corpus.
+        graph = self._graph([_documents(LOW_SCORE)])
+
+        graph.invoke({"query": OUT_OF_DOMAIN_QUERY})
+
+        self.assertEqual(
+            self._log_records()[0]["reason"], "low_retrieval_score"
         )
 
     def test_unsupported_topic_is_stopped_before_the_rewriter(

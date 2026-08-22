@@ -6,6 +6,7 @@ Usage:
     python eval/run_eval.py --set guardrail
     python eval/run_eval.py --set contracts
     python eval/run_eval.py --set calibration --distribution
+    python eval/run_eval.py --set calibration --perturb
     python eval/run_eval.py --set calibration --ngram 2,4
     python eval/run_eval.py --set calibration --title-weight 2
     python eval/run_eval.py --set guardrail --strict
@@ -124,6 +125,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import re
 import sys
 import tempfile
@@ -176,6 +178,19 @@ EVAL_CLAIM_TEXT = "evaluation harness placeholder claim"
 # has to resolve to a supported topic; which topic is immaterial.
 CITATION_PROBE_QUERY = "ลาพักร้อนได้กี่วัน"
 CITATION_PROBE_TOPIC = "annual_leave"
+
+# Typo-perturbation sweep. The seed is fixed and written down because a
+# robustness curve nobody else can reproduce is an anecdote with a
+# decimal point; the levels are how many single-character edits one
+# probe carries, so the curve has a clean 0-edit control at its left.
+_PERTURBATION_SEED = 42
+_PERTURBATION_LEVELS = (1, 2, 3)
+_PERTURBATION_OPERATIONS = ("transpose", "delete", "substitute")
+# Thai tone marks and the vowel signs that sit above or below a
+# consonant. These are what a real mistyping swaps -- the calibration
+# set's own `ลาพักรอ้น` is a misplaced tone mark -- and they are combining
+# characters, so replacing one leaves a word that still looks like a word.
+_THAI_MARKS = "่้๊๋ัิีึืุู็์ํ"
 
 # The two buckets of the guardrail fixture, and the balanced minimum
 # AGENTS.md section 10 requires of it. A rate computed over fewer cases
@@ -496,6 +511,7 @@ def evaluate_retrieval(
     retriever: LocalTfidfRetriever,
     documents_by_id: dict[str, Document],
     show_distribution: bool,
+    perturb: bool = False,
 ) -> int:
     """Run one retrieval set and print per-case rows plus the metrics.
 
@@ -673,6 +689,9 @@ def evaluate_retrieval(
         f"{_ratio(recovered, len(medium_answerable))}"
     )
 
+    if perturb:
+        evaluate_perturbations(cases, graph, rewrite_cache)
+
     route_failures = sum(
         predictions[c.id].route != c.expected_route for c in cases
     )
@@ -687,6 +706,155 @@ def evaluate_retrieval(
         & set(predictions[c.id].retrieved_ids[: config.TOP_K])
     )
     return route_failures + source_failures
+
+
+def _perturb_query(query: str, edits: int, rng: random.Random) -> str:
+    """Apply ``edits`` single-character typos to one query.
+
+    The three operations are the mistakes a Thai keyboard actually
+    produces: two characters swapped, one dropped, and a tone mark or
+    vowel sign replaced by a neighbouring one. Substitution is tried
+    first because it is the most characteristic of Thai input and the
+    least destructive; a query with no mark to swap gets a
+    transposition instead, so every requested edit is really applied.
+
+    Args:
+        query: The fixture query, unmodified.
+        edits: How many single-character typos to apply.
+        rng: Seeded generator, so a sweep is reproducible by anyone.
+
+    Returns:
+        The perturbed query. A query too short to edit is returned
+        unchanged rather than emptied, which would test the guardrail
+        instead of the index.
+    """
+    characters = list(query)
+    for _ in range(edits):
+        if len(characters) < 2:
+            break
+        operation = rng.choice(_PERTURBATION_OPERATIONS)
+        if operation == "substitute":
+            positions = [
+                index
+                for index, character in enumerate(characters)
+                if character in _THAI_MARKS
+            ]
+            if positions:
+                position = rng.choice(positions)
+                characters[position] = rng.choice(
+                    [
+                        mark
+                        for mark in _THAI_MARKS
+                        if mark != characters[position]
+                    ]
+                )
+                continue
+            operation = "transpose"
+        index = rng.randrange(len(characters) - 1)
+        if operation == "transpose":
+            characters[index], characters[index + 1] = (
+                characters[index + 1],
+                characters[index],
+            )
+        else:
+            del characters[index]
+    return "".join(characters)
+
+
+def evaluate_perturbations(
+    cases: Sequence[RetrievalCase],
+    graph: CompiledStateGraph,
+    rewrite_cache: dict[str, list[str]],
+) -> None:
+    """Print the Hit@3 degradation curve under injected typos.
+
+    The design claim behind character n-grams is that a misspelling
+    still shares most of its fragments with the correct wording. Two
+    fixture cases demonstrating it are an anecdote; this measures it, by
+    running the same answerable queries again with one, two and three
+    typos injected under a fixed seed.
+
+    It reports and never gates. The perturbed queries carry no labels of
+    their own -- they inherit the expected sources of the case they came
+    from -- and a random edit that genuinely destroys a question is a
+    fact about the edit, not a regression to fail a build on.
+
+    Args:
+        cases: The set's cases. Only labelled-answerable ones in the
+            ``normal`` category are used: Hit@3 needs expected sources,
+            and the ``noisy`` cases are already misspelled, so their
+            level-0 column would not be the clean baseline the curve is
+            measured against.
+        graph: The compiled pipeline, shared with the main run.
+        rewrite_cache: Passed to ``predict`` unchanged; a perturbed
+            medium-band query is a cache miss by construction.
+    """
+    baseline = [
+        c
+        for c in cases
+        if c.expected_route == "answered" and c.category == "normal"
+    ]
+    if not baseline:
+        print(
+            "-- typo perturbation: no correctly-spelled answerable "
+            "cases in this set --"
+        )
+        return
+    rng = random.Random(_PERTURBATION_SEED)
+    print(
+        f"-- typo-perturbation robustness (seed {_PERTURBATION_SEED}, "
+        f"n={len(baseline)} correctly-spelled answerable cases, one "
+        "probe per case per level) --"
+    )
+    print(
+        "   reporting only, and a small sample: it says whether the "
+        "index degrades gracefully, not by how much. Perturbed queries "
+        "are absent from the rewrite cache by construction, so a "
+        "medium-band probe expands on aliases and the original alone"
+    )
+    for level in (0, *_PERTURBATION_LEVELS):
+        hits = 0
+        answered = 0
+        rejected = 0
+        lost: list[str] = []
+        for case in baseline:
+            query = (
+                case.query
+                if level == 0
+                else _perturb_query(case.query, level, rng)
+            )
+            probe = RetrievalCase(
+                id=f"{case.id}~p{level}",
+                category=case.category,
+                query=query,
+                expected_route=case.expected_route,
+                expected_sources=case.expected_sources,
+            )
+            try:
+                prediction = predict(probe, graph, rewrite_cache)
+            except EvalFixtureError:
+                # An edit that trips the input screen is a fact about
+                # the edit. It counts as neither a hit nor a silent
+                # pass, so it is reported on its own.
+                rejected += 1
+                continue
+            if set(case.expected_sources) & set(
+                prediction.retrieved_ids[: config.TOP_K]
+            ):
+                hits += 1
+            else:
+                lost.append(case.id)
+            if prediction.route == "answered":
+                answered += 1
+        scored = len(baseline) - rejected
+        note = f" guardrail-rejected={rejected}" if rejected else ""
+        print(
+            f"  perturbations={level}  Hit@{config.TOP_K}: "
+            f"{_ratio(hits, scored)}  routed answered: "
+            f"{_ratio(answered, scored)}{note}"
+        )
+        if lost:
+            print(f"      lost every expected source: {', '.join(lost)}")
 
 
 def _validated_guardrail_cases(raw_cases: object) -> list[dict]:
@@ -1691,6 +1859,12 @@ def main(argv: list[str] | None = None) -> int:
         help="print per-category raw score distributions",
     )
     parser.add_argument(
+        "--perturb",
+        action="store_true",
+        help="also print the Hit@3 curve under 1-3 injected typos "
+        "(reporting only: it never changes the exit code)",
+    )
+    parser.add_argument(
         "--ngram",
         type=_parse_ngram,
         default=None,
@@ -1751,7 +1925,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     failures = evaluate_retrieval(
-        args.set_name, retriever, documents_by_id, args.distribution
+        args.set_name,
+        retriever,
+        documents_by_id,
+        args.distribution,
+        args.perturb,
     )
     # The contract fixtures are scored, not printed, here: a retrieval
     # gate has always failed on a broken citation or rewrite verdict, and

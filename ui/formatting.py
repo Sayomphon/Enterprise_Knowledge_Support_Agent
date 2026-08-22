@@ -16,6 +16,7 @@ import html
 from datetime import datetime
 
 from src import config
+from src.fallback import ReasonFamily
 from src.schemas import (
     PipelineState,
     RetrievedDocument,
@@ -28,6 +29,7 @@ from ui.labels import (
     GUARDRAIL_PASS_DETAIL,
     LINKED_POLICY_LABEL,
     LINKED_POLICY_TEXT,
+    REASON_FAMILY_TAGS,
     SCOPE_STRIPS,
     SCORE_BAR_CEILING,
     SCORE_LABEL,
@@ -471,7 +473,11 @@ def _trace_rows(state: PipelineState) -> list[tuple[str, str, str, str]]:
         detail = (
             f"supported · {', '.join(scope_topics)}"
             if scope_topics
-            else f"unsupported · {state.get('scope_reason')}"
+            # "not resolved" rather than "unsupported": the gate now has
+            # two refusal codes and one of them says the corpus may well
+            # cover the question, so the row states what happened and
+            # lets the code beside it say why.
+            else f"not resolved · {state.get('scope_reason')}"
         )
         if scope_score is not None:
             detail += (
@@ -642,6 +648,44 @@ def _log_table_html(records: list[dict]) -> str:
         "<th>Time</th><th>Query</th><th>Reason</th><th>Raw</th>"
         "<th>Expanded</th><th>Top sources</th>"
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+    )
+
+
+def _triage_row_html(
+    reason: str, count: int, query: str, family: ReasonFamily | None
+) -> str:
+    """Render one fallback-triage row, coloured by its reason family.
+
+    Args:
+        reason: Reason code the group is keyed on.
+        count: How many of this session's requests carried it.
+        query: Newest query in the group.
+        family: Reporting family of ``reason``, from ``src.fallback``,
+            or ``None`` for a code this build does not recognise.
+
+    Returns:
+        The row markup. An unrecognised code is still drawn, labelled
+        unclassified: dropping the row would hide exactly the requests a
+        missing family mapping ought to be making obvious.
+    """
+    label, modifier = REASON_FAMILY_TAGS.get(
+        family, ("unclassified", "unknown")
+    )
+    count_colour = (
+        "red"
+        if family is ReasonFamily.SECURITY_OR_INVALID_INPUT
+        else "amber"
+    )
+    return (
+        '<div class="araya-triage">'
+        f'<span class="araya-triage-count araya-mono-face '
+        f'araya-triage-count--{count_colour}">{count}</span>'
+        '<span class="araya-triage-body">'
+        f'<span class="araya-triage-query">{html.escape(query)}</span>'
+        f'<span class="araya-triage-meta araya-mono-face">'
+        f"{html.escape(reason)}</span></span>"
+        f'<span class="araya-triage-tag araya-triage-tag--{modifier}">'
+        f"{html.escape(label)}</span></div>"
     )
 
 

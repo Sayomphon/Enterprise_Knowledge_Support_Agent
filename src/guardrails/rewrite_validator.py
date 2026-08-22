@@ -13,6 +13,12 @@ beyond the original question's topics, and enough of the original wording
 must survive. Rejected candidates are never executed and never logged --
 they are model output about a user query, and one rejection reason for
 rejecting them is that they may carry injected instructions.
+
+The anchor rule is one-sided by design: a candidate may not ADD a figure
+the employee never wrote, and it may drop one. Dropping is what a
+generalizing rewrite does, the original query is searched beside every
+rewrite, and the reporter answers from the original -- so the result
+counts the dropped anchors as a diagnostic instead of refusing them.
 """
 
 from __future__ import annotations
@@ -58,9 +64,11 @@ def validate_rewrites(
 
     Returns:
         The accepted candidates in model order, the rejected ones for
-        diagnostics, and reason ``"rewrite_rejected"`` when nothing
-        survived. An empty candidate list is not a rejection: it means
-        the model produced nothing, which the rewriter already reports.
+        diagnostics, how many of the original query's anchors the
+        accepted ones dropped, and reason ``"rewrite_rejected"`` when
+        nothing survived. An empty candidate list is not a rejection: it
+        means the model produced nothing, which the rewriter already
+        reports.
     """
     threshold = (
         continuity_threshold
@@ -96,8 +104,40 @@ def validate_rewrites(
     return RewriteValidationResult(
         accepted_queries=tuple(accepted),
         rejected_queries=tuple(rejected),
+        dropped_anchor_count=_dropped_anchor_count(
+            original_anchors, accepted
+        ),
         reason=_REWRITE_REJECTED if candidates and not accepted else None,
     )
+
+
+def _dropped_anchor_count(
+    original_anchors: set[str], accepted: Sequence[str]
+) -> int:
+    """Count the original anchors that an accepted rewrite left out.
+
+    Anchor DELETION is tolerated on purpose while anchor INVENTION is
+    rejected: the rewrites this repository ships in
+    ``eval/cached_rewrites.json`` generalize on purpose -- "two days of
+    annual leave, where do I click" becomes "how to file annual leave in
+    the HR Portal" -- and enforcing equality would refuse them and cost
+    the medium band its recovery rate. It stays measurable rather than
+    merely asserted, so that a wrong answer traced to a rewrite can be
+    checked against this number instead of debated.
+
+    Args:
+        original_anchors: Numeric anchors of the employee's own query.
+        accepted: Candidates that passed every intent-preservation rule.
+
+    Returns:
+        How many distinct original anchors are missing from at least one
+        accepted candidate. Bounded by ``len(original_anchors)``, and
+        zero whenever every accepted candidate carried them all.
+    """
+    dropped: set[str] = set()
+    for candidate in accepted:
+        dropped |= original_anchors - numeric_anchors(candidate)
+    return len(dropped)
 
 
 def numeric_anchors(text: str) -> set[str]:
