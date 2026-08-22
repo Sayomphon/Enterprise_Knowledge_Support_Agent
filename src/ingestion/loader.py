@@ -7,13 +7,23 @@ retrieval can never run over a partially loaded corpus (AGENTS.md
 sections 6.6 and 7).
 
 It also offers a seam for screening document text at ingestion, which the
-graph fills with the injection screen. That screen only WARNS: the corpus
-is trusted-ish operational data, a chat transcript may legitimately quote
-someone telling a colleague to ignore a rule, and refusing to load it
-would break benign evidence to defend against a document that the
-downstream claim validator already contains. The screen is passed in
-rather than imported because the guardrails sit above this module in the
-dependency order (AGENTS.md section 3).
+graph fills with the injection screen. What that screen does depends on
+the stratum, because the two carry different authority:
+
+    - a CHAT transcript is noisy third-party text and the realistic
+      carrier of an indirect injection, so a line shaped like an
+      instruction is replaced with a placeholder and the rest of the
+      transcript keeps the retrieval recall it was loaded for
+    - a POLICY document is the corpus's own authority, so an instruction
+      inside one is a corrupt corpus and the load fails (section 6.6)
+
+Quarantine contains what the model is shown; it is not the guarantee. A
+paraphrase this finite screen misses still reaches the reporter, and what
+stops it from becoming an answer is the claim contract downstream, which
+requires every claim to quote a policy document.
+
+The screen is passed in rather than imported because the guardrails sit
+above this module in the dependency order (AGENTS.md section 3).
 """
 
 from __future__ import annotations
@@ -22,6 +32,7 @@ import re
 import sys
 import unicodedata
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -55,6 +66,12 @@ _AUTHORITY_BY_SOURCE_TYPE = {
 # every loaded document can actually be cited and validated at runtime.
 _SOURCE_ID_PATTERN = re.compile(r"[A-Z]{2,5}-\d{3}\Z")
 
+# What replaces a quarantined line. It says what happened rather than
+# deleting the line silently: the reporter sees that something was
+# removed instead of reading a transcript that appears to flow, and a
+# reviewer comparing the file with the loaded document can see where.
+QUARANTINE_PLACEHOLDER = "[[REDACTED: instruction-shaped line]]"
+
 
 class CorpusValidationError(ValueError):
     """Raised when the corpus directory or one document violates the schema."""
@@ -72,23 +89,25 @@ def load_documents(
             ``config.CORPUS_DIR``. The directory and every file in it are
             resolved before reading so the loader only ever touches files
             that really live inside this directory.
-        content_screen: Optional screen applied to each document body,
-            returning the id of a rule the text matches or ``None``. A
-            match is reported on stderr and nothing more: the corpus is
-            not user input, and a benign chat transcript quoting an
-            instruction must still load. It is defence in depth for an
-            operator reading logs, not a control.
+        content_screen: Optional screen applied line by line to each
+            document body, returning the id of a rule the line matches or
+            ``None``. Chat lines that match are quarantined; a policy
+            document that matches fails the load. Omitting it loads every
+            body verbatim, which is what the tests that are not about
+            this screen do.
 
     Returns:
         Documents ordered by file name, so downstream indexing stays
-        deterministic across platforms and filesystems.
+        deterministic across platforms and filesystems. Chat bodies carry
+        the quarantined form, which is the only form any later stage sees.
 
     Raises:
         CorpusValidationError: If the directory is missing or holds no
             Markdown files, a file resolves outside the corpus directory,
             frontmatter is malformed, a required field is missing or
             invalid, content is empty, two files share a ``source_id``,
-            or a canonical link is broken.
+            a canonical link is broken, or a policy document carries
+            instruction-shaped text.
     """
     base = Path(corpus_dir if corpus_dir is not None else config.CORPUS_DIR)
     base = base.resolve()
@@ -114,19 +133,7 @@ def load_documents(
             )
         document = _parse_document(resolved)
         if content_screen is not None:
-            rule_id = content_screen(document.content)
-            if rule_id is not None:
-                # Named on stderr so an operator ingesting a new corpus
-                # sees which file carries instruction-shaped text. The
-                # document still loads, and the answer contract is what
-                # actually stops a poisoned document from being cited
-                # into an answer.
-                print(
-                    f"loader: {path.name} contains text matching injection "
-                    f"rule {rule_id}; it is loaded as evidence, never as "
-                    "instruction",
-                    file=sys.stderr,
-                )
+            document = _screened(document, path.name, content_screen)
         if document.source_id in defined_in:
             raise CorpusValidationError(
                 f"{path.name}: duplicate source_id {document.source_id!r} "
@@ -136,6 +143,87 @@ def load_documents(
         documents.append(document)
     _validate_canonical_links(documents, defined_in)
     return documents
+
+
+def sanitize_untrusted_content(
+    content: str, content_screen: Callable[[str], str | None]
+) -> tuple[str, int]:
+    """Replace every instruction-shaped line of a body with a placeholder.
+
+    Per line rather than per document on purpose: a chat transcript is
+    loaded for the informal vocabulary that gives slang questions their
+    recall, and dropping the whole file to remove one planted line would
+    pay for the defence with the evidence it was defending.
+
+    Args:
+        content: The document body, already NFC-normalized.
+        content_screen: Screen returning a matched rule id, or ``None``.
+
+    Returns:
+        The sanitized body and how many lines it replaced. The body is
+        returned unchanged, and the count is zero, when nothing matched.
+    """
+    kept: list[str] = []
+    quarantined = 0
+    for line in content.splitlines():
+        if content_screen(line) is None:
+            kept.append(line)
+            continue
+        kept.append(QUARANTINE_PLACEHOLDER)
+        quarantined += 1
+    # Rejoining an untouched body would also rewrite its line endings,
+    # so a body with nothing to quarantine is returned as it arrived.
+    return ("\n".join(kept) if quarantined else content, quarantined)
+
+
+def _screened(
+    document: Document,
+    file_name: str,
+    content_screen: Callable[[str], str | None],
+) -> Document:
+    """Apply the ingestion screen appropriate to a document's stratum.
+
+    Args:
+        document: The parsed document.
+        file_name: File name used to build actionable messages.
+        content_screen: Screen returning a matched rule id, or ``None``.
+
+    Returns:
+        The same document for a policy, and the quarantined form for a
+        chat transcript, with its replaced-line count recorded.
+
+    Raises:
+        CorpusValidationError: If a policy document carries
+            instruction-shaped text.
+    """
+    if document.source_type == "policy":
+        rule_id = content_screen(document.content)
+        if rule_id is not None:
+            # Fail fast rather than quarantine: this document IS the rule
+            # the assistant states, so text inside it that addresses the
+            # model means the authority itself is compromised, and a
+            # partially trusted policy is not a thing this pipeline can
+            # reason about (AGENTS.md section 6.6).
+            raise CorpusValidationError(
+                f"{file_name}: policy document carries instruction-shaped "
+                f"text matching injection rule {rule_id}"
+            )
+        return document
+    content, quarantined = sanitize_untrusted_content(
+        document.content, content_screen
+    )
+    if quarantined:
+        # The file and the count, never the text: the quarantined line is
+        # exactly the string that must not be repeated anywhere a person
+        # or a log might read it as instruction.
+        print(
+            f"loader: {file_name} had {quarantined} instruction-shaped "
+            "line(s) quarantined before indexing",
+            file=sys.stderr,
+        )
+    return replace(
+        document, content=content, quarantined_line_count=quarantined
+    )
 
 
 def _validate_canonical_links(

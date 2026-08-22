@@ -339,6 +339,25 @@ def _degraded(node_name: str, exc: Exception, reason: ReasonCode) -> dict[str, o
     return {"fallback_reason": reason.value}
 
 
+def load_screened_corpus() -> list[Document]:
+    """Load the corpus through the ingestion screen the pipeline uses.
+
+    Which screen guards ingestion is a pipeline decision, so it is made
+    here rather than at each entry point: the CLI's ``--check`` reports
+    what the screen did, and a second copy of this wiring there could
+    report a corpus the graph never ran on.
+
+    Returns:
+        The validated corpus, with instruction-shaped lines already
+        quarantined out of the chat transcripts.
+
+    Raises:
+        CorpusValidationError: If the corpus is malformed, or a policy
+            document carries instruction-shaped text.
+    """
+    return load_documents(content_screen=matched_rule)
+
+
 def build_graph(
     retriever: Retriever | None = None,
     log_path: str | Path | None = None,
@@ -374,11 +393,7 @@ def build_graph(
     rewrite = rewriter if rewriter is not None else safe_rewrite
     report = reporter if reporter is not None else generate_answer
     if documents is None:
-        # The corpus is screened at ingestion for instruction-shaped text.
-        # It only warns: this is the layer that gives an operator a name
-        # to look at, while the claim validator downstream is what keeps a
-        # poisoned document out of an answer.
-        documents = load_documents(content_screen=matched_rule)
+        documents = load_screened_corpus()
     if retriever is None:
         retriever = LocalTfidfRetriever(documents)
     documents_by_id = {document.source_id: document for document in documents}

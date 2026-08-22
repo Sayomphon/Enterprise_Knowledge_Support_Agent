@@ -23,7 +23,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from src import config
 from src.fallback import response_text_for_state
-from src.graph import build_graph
+from src.graph import build_graph, load_screened_corpus
 from src.schemas import PipelineState
 
 BANNER = "=" * 68
@@ -38,6 +38,18 @@ SCORE_LABEL = "Retrieval similarity score (heuristic)"
 STARTUP_ERROR_TEXT = (
     "ERROR: the knowledge base could not be loaded ({name}). "
     "Check CORPUS_DIR and the document frontmatter."
+)
+# Reported by --check so an operator can see the ingestion screen ran,
+# rather than having to trust that it exists. The quarantined text itself
+# is never printed: it is exactly the string that must not be repeated
+# anywhere a reader might take it for an instruction.
+CORPUS_SCREEN_CLEAN_TEXT = (
+    "Ingestion screen: {count} documents loaded, no instruction-shaped "
+    "lines quarantined"
+)
+CORPUS_SCREEN_QUARANTINED_TEXT = (
+    "Ingestion screen: {source_id} had {lines} instruction-shaped line(s) "
+    "quarantined before indexing"
 )
 KEY_CONFIGURED_TEXT = "OPENAI_API_KEY: configured"
 KEY_MISSING_TEXT = (
@@ -171,12 +183,42 @@ def _run_setup_check() -> int:
     if _compile_graph() is None:
         return 1
     print("Corpus and pipeline: ready")
+    for line in _corpus_screen_lines():
+        print(line)
     print(
         KEY_CONFIGURED_TEXT
         if config.has_llm_credential()
         else KEY_MISSING_TEXT
     )
     return 0
+
+
+def _corpus_screen_lines() -> list[str]:
+    """Describe what the ingestion screen did to the loaded corpus.
+
+    The corpus is read a second time here instead of being pulled out of
+    the compiled graph: ``--check`` runs once, and giving the graph an
+    accessor for it would put a reporting need into the pipeline
+    contract. Reached only after the graph compiled, so the load cannot
+    fail here for a reason the caller has not already been told about.
+
+    Returns:
+        One line per document that had lines quarantined, or a single
+        line stating that none did.
+    """
+    documents = load_screened_corpus()
+    quarantined = [
+        document for document in documents if document.quarantined_line_count
+    ]
+    if not quarantined:
+        return [CORPUS_SCREEN_CLEAN_TEXT.format(count=len(documents))]
+    return [
+        CORPUS_SCREEN_QUARANTINED_TEXT.format(
+            source_id=document.source_id,
+            lines=document.quarantined_line_count,
+        )
+        for document in quarantined
+    ]
 
 
 def main() -> int:
