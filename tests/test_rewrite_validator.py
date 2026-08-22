@@ -47,6 +47,10 @@ SAME_LEAVE_TYPE_REWRITE = "ลาป่วยใช้ใบรับรอง�
 
 AMOUNT_QUERY = "เบิกค่าแท็กซี่ไม่เกิน 500 บาทต้องทำอย่างไร"
 AMOUNT_DRIFT_REWRITE = "เบิกค่าแท็กซี่ไม่เกิน 5,000 บาทต้องทำอย่างไร"
+# The same drift written in Thai numerals. An extractor that reads only
+# ASCII digits finds no figure in it, so the amount rule would compare an
+# empty set against the original and accept the changed question.
+THAI_NUMERAL_AMOUNT_DRIFT_REWRITE = "เบิกค่าแท็กซี่ไม่เกิน ๕,๐๐๐ บาทต้องทำอย่างไร"
 AMOUNT_VALID_REWRITE = "ขั้นตอนเบิกค่าแท็กซี่วงเงิน 500 บาท"
 
 TIME_QUERY = "เลิกงานหลัง 22:00 เบิกค่าแท็กซี่ได้ไหม"
@@ -165,6 +169,9 @@ class TestRejectedRewrites(unittest.TestCase):
     def test_changed_amount_is_rejected(self) -> None:
         self._reject(AMOUNT_QUERY, AMOUNT_DRIFT_REWRITE)
 
+    def test_changed_amount_in_thai_numerals_is_rejected(self) -> None:
+        self._reject(AMOUNT_QUERY, THAI_NUMERAL_AMOUNT_DRIFT_REWRITE)
+
     def test_changed_clock_time_is_rejected(self) -> None:
         self._reject(TIME_QUERY, TIME_DRIFT_REWRITE)
 
@@ -227,6 +234,20 @@ class TestNumericAnchors(unittest.TestCase):
 
     def test_text_without_digits_has_no_anchors(self) -> None:
         self.assertEqual(numeric_anchors("เบิกค่าแท็กซี่"), set())
+
+    def test_thai_numerals_are_read_as_the_figure_they_show(self) -> None:
+        # An anchor extractor that sees only ASCII digits reads a Thai
+        # numeral as no figure at all, so a rewrite could turn 500 into
+        # a different amount simply by spelling it in another script.
+        self.assertEqual(numeric_anchors("ไม่เกิน ๕๐๐ บาท"), {"500"})
+
+    def test_fullwidth_numerals_are_read_as_the_figure_they_show(
+        self,
+    ) -> None:
+        self.assertEqual(numeric_anchors("ไม่เกิน ５００ บาท"), {"500"})
+
+    def test_a_thai_numeral_clock_time_is_one_anchor(self) -> None:
+        self.assertEqual(numeric_anchors("หลัง ๒๒:๐๐ น."), {"22:00"})
 
 
 class TestDroppedAnchorDiagnostic(unittest.TestCase):

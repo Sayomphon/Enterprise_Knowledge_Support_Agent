@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from src import config
+from src.guardrails.normalization import nfkc_fold
 
 # "prompt_injection" matches the JSONL reason-code enum in AGENTS.md
 # section 8; the three validation codes extend that enum for requests

@@ -29,6 +29,7 @@ from collections.abc import Sequence
 
 from src import config
 from src.guardrails.input_guardrail import screen_query
+from src.guardrails.normalization import fold_for_contract_checks
 from src.guardrails.scope_validator import validate_scope
 from src.guardrails.text_similarity import overlap
 from src.schemas import RewriteValidationResult
@@ -148,14 +149,18 @@ def numeric_anchors(text: str) -> set[str]:
     that ``5,000`` and ``5000`` are recognised as the same value.
 
     Args:
-        text: Query or rewrite candidate.
+        text: Query, rewrite candidate, claim, or document body.
 
     Returns:
-        The set of normalized numeric anchors. Only Arabic digits are
-        recognised, which matches the corpus and the queries it serves.
+        The set of normalized numeric anchors. The text is folded first,
+        so a figure spelled in Thai or fullwidth numerals is read as the
+        amount it shows rather than as no figure at all: an extractor
+        that sees only ASCII digits would compare an empty set against
+        the original and let a changed amount through unnoticed.
     """
-    times = set(_TIME_PATTERN.findall(text))
-    remainder = _TIME_PATTERN.sub(" ", text)
+    folded = fold_for_contract_checks(text)
+    times = set(_TIME_PATTERN.findall(folded))
+    remainder = _TIME_PATTERN.sub(" ", folded)
     numbers = {
         match.replace(",", "") for match in _NUMBER_PATTERN.findall(remainder)
     }
