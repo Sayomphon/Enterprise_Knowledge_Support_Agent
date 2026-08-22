@@ -14,42 +14,45 @@ offline, free, and reproducible byte for byte.
 
 | Item | Value |
 |---|---|
-| Date run | 2026-08-21 |
-| Git commit | `1d7b729224cf455c495e30e5860f00354266568a` plus the uncommitted P0-1 to P0-5 working tree |
+| Date run | 2026-08-22 |
+| Git commit | `2377ea2c980d9c67bd823d058ab3536954f7ebc3` plus the uncommitted P1-1 to P1-6 working tree |
 | Python | 3.11.15 |
-| Configuration | committed defaults: `.env.example` values, `FINAL_ANSWER_THRESHOLD=0.21` |
+| Configuration | committed defaults: `.env.example` values, `FINAL_ANSWER_THRESHOLD=0.21`, `REQUEST_DEADLINE_SECONDS=45` |
 | LLM model used | **none.** The harness makes no provider call in any set below. Medium-band expansion first searches deterministic topic-alias variants; only if those miss does it replay `eval/cached_rewrites.json`, and a query absent from that cache is scored as a failed rewrite and reported as a cache miss. |
 | `OPENAI_API_KEY` | empty — every number below was produced with no credential visible to the process |
-| Corpus checksum | `c3590bc79096fed9c0c24a9401872fc3189414b25667c10905d229f840c0e487`, the SHA-256 of `data/docs/*.md` concatenated in sorted filename order |
+| Corpus checksum | `c3590bc79096fed9c0c24a9401872fc3189414b25667c10905d229f840c0e487`, the SHA-256 of `data/docs/*.md` concatenated in sorted filename order (unchanged since the previous run) |
 
 | Set | File | Cases |
 |---|---|---:|
-| Calibration (tuning only) | `eval/retrieval_calibration.json` | 21 |
+| Calibration (tuning only) | `eval/retrieval_calibration.json` | 25 |
 | Held-out (reporting only) | `eval/retrieval_heldout.json` | 14 |
 | Guardrail | `eval/guardrail_cases.json` | 42 (21 attack / 21 benign) |
 | Near-domain | `eval/near_domain_cases.json` | 20 (14 hard negative / 6 benign twin) |
-| Contract fixtures | `eval/citation_cases.json` + `eval/rewrite_cases.json` | 19 + 20 |
+| Contract fixtures | `eval/citation_cases.json` + `eval/rewrite_cases.json` | 23 + 20 |
 | Live answer quality | `eval/answer_cases.json` | 17 — see `eval/ANSWER_RESULTS.md` |
 
-**This file supersedes the run recorded at commit `b2b6fc1`.** Three things
-changed since then and all three are visible below.
+**This file supersedes the run recorded at commit `2377ea2`.** Four things
+changed since then and all four are visible below.
 
-1. **Metric semantics.** "OOD Fallback Accuracy" counted every fallback-labelled
-   case regardless of category, so a set with five in-domain unsupported cases
-   reported a nine-case out-of-domain rate. Each category now has its own
-   denominator, with "Overall Fallback Accuracy" reported separately.
-   "Answer-route Precision" is now "Answer-route Selection Precision", because
-   it scores route selection and retrieval and never reads an answer. Recall@1,
-   MRR, and False Fallback Rate are new. **No routing changed:** every
-   per-case verdict below is byte-identical to the `b2b6fc1` run.
-2. **Deterministic alias expansion** now runs in front of the medium-band
-   rewrite. Expanded scores rise on the answerable side; labelled-fallback cases
-   never reach that stage at all, because the scope gate stops them first.
-   Calibration medium-band rewrite calls fell from 4 to 1, held-out from 2 to 1.
-3. **A near-domain set** was added, and the unsupported catalog grew by seven
-   groups to close a verified leak: eligibility questions about expense items
-   the corpus has no rule for used to be answered from the reimbursement
-   *process* policy.
+1. **The answer contract gained a numeric rule.** Every number and clock time a
+   claim states must appear in a document that claim cites, or in the question;
+   otherwise the request degrades as `unsupported_numeric_claim`. The citation
+   fixture grew from 19 to 23 cases to cover it — a figure absent from the cited
+   evidence, a figure the employee supplied, and a clock time in both
+   directions.
+2. **Four receipt-slang cases** joined the calibration split, taking it from 21
+   to 25. They were added because a paraphrased receipt question is the shape
+   the held-out coverage miss belongs to, and one case's shape is not evidence
+   of a gap; the group is.
+3. **Two aliases from `FIN-002`'s own wording** — "financial evidence" and
+   "documents supporting a claim" — joined the receipt topic. That is the whole
+   change behind calibration coverage moving from 15/16 to 16/16: no threshold
+   and no index parameter was touched. The ablation that rejected the
+   alternatives is in `eval/BASELINE.md`.
+4. **A per-request deadline** now bounds both LLM boundaries, and answers are
+   capped at six claims. Neither is visible in these offline numbers — the
+   harness calls no provider — which is why the wall-clock evidence for it lives
+   in `eval/ANSWER_RESULTS.md`.
 
 ## Commands
 
@@ -58,23 +61,23 @@ python -m unittest discover -s tests
 
 python eval/run_eval.py --set calibration
 python eval/run_eval.py --set heldout
-python eval/run_eval.py --set guardrail
 python eval/run_eval.py --set near_domain
+python eval/run_eval.py --set guardrail
 python eval/run_eval.py --set contracts
-python eval/run_eval.py --set calibration --distribution
 
-python eval/run_eval.py --set calibration --strict    # exit 0
-python eval/run_eval.py --set guardrail --strict      # exit 0
-python eval/run_eval.py --set near_domain --strict    # exit 0
-python eval/run_eval.py --set contracts --strict      # exit 0
-python eval/run_eval.py --set heldout --strict        # exit 1, one known miss
+# The same sets as gates
+python eval/run_eval.py --set calibration --strict   # exit 0
+python eval/run_eval.py --set near_domain --strict   # exit 0
+python eval/run_eval.py --set guardrail --strict     # exit 0
+python eval/run_eval.py --set contracts --strict     # exit 0
+python eval/run_eval.py --set heldout --strict       # exit 1, on the known miss
 ```
 
 ## Offline unit tests
 
 ```text
 ----------------------------------------------------------------------
-Ran 363 tests in 1.210s
+Ran 431 tests in 1.406s
 
 OK
 ```
@@ -86,13 +89,13 @@ against this set. It cannot be generalisation evidence for the same reason a
 training set cannot.
 
 ```text
-== retrieval set: calibration (21 cases) ==
+== retrieval set: calibration (25 cases) ==
 thresholds: REWRITE_FLOOR=0.1, DIRECT_ANSWER_THRESHOLD=0.19, FINAL_ANSWER_THRESHOLD=0.21
   cal_normal_01      normal      raw=0.2086 band=high   predicted=answered expected=answered ok
   cal_normal_02      normal      raw=0.2351 band=high   predicted=answered expected=answered ok
   cal_normal_03      normal      raw=0.2554 band=high   predicted=answered expected=answered ok
   cal_normal_04      normal      raw=0.2752 band=high   predicted=answered expected=answered ok
-  cal_normal_05      normal      raw=0.1446 expanded=0.2275 band=medium predicted=answered expected=answered ok
+  cal_normal_05      normal      raw=0.1446 expanded=0.2746 band=medium predicted=answered expected=answered ok
   cal_noisy_01       noisy       raw=0.2303 band=high   predicted=answered expected=answered ok
   cal_noisy_02       noisy       raw=0.1746 expanded=0.2176 band=medium predicted=answered expected=answered ok
   cal_noisy_03       noisy       raw=0.1972 band=high   predicted=answered expected=answered ok
@@ -109,19 +112,23 @@ thresholds: REWRITE_FLOOR=0.1, DIRECT_ANSWER_THRESHOLD=0.19, FINAL_ANSWER_THRESH
   cal_unsupported_03 unsupported raw=0.1884 band=medium predicted=fallback expected=fallback ok reason=unsupported_topic [rewrite-cache MISS: original-only expansion]
   cal_unsupported_04 unsupported raw=0.0960 band=low    predicted=fallback expected=fallback ok reason=low_retrieval_score
   cal_unsupported_05 unsupported raw=0.0737 band=low    predicted=fallback expected=fallback ok reason=low_retrieval_score
+  cal_noisy_06       noisy       raw=0.1555 expanded=0.2144 band=medium predicted=answered expected=answered ok
+  cal_noisy_07       noisy       raw=0.1551 expanded=0.2779 band=medium predicted=answered expected=answered ok
+  cal_normal_06      normal      raw=0.2070 band=high   predicted=answered expected=answered ok
+  cal_normal_07      normal      raw=0.2044 band=high   predicted=answered expected=answered ok
 -- metrics --
-  Retrieval Hit@3:      1.000 (12/12)
-  Retrieval Recall@1:     0.917 (11/12)
-  Retrieval MRR:          0.958 (best expected source, n=12)
-  Answer-route Selection Precision: 1.000 (12/12)
+  Retrieval Hit@3:      1.000 (16/16)
+  Retrieval Recall@1:     0.938 (15/16)
+  Retrieval MRR:          0.969 (best expected source, n=16)
+  Answer-route Selection Precision: 1.000 (16/16)
       share of cases routed "answered" that were labelled answerable and hit an expected source -- route selection, not answer correctness
-  Answer-route Coverage:  1.000 (12/12)
-  False Fallback Rate:    0.000 (0/12)
+  Answer-route Coverage:  1.000 (16/16)
+  False Fallback Rate:    0.000 (0/16)
   OOD Fallback Accuracy:  1.000 (4/4)
   Unsupported In-domain Fallback Accuracy: 1.000 (5/5)
   Overall Fallback Accuracy: 1.000 (9/9)
-  Authoritative Evidence Coverage Rate: 1.000 (12/12)
-  Rewrite Recovery Rate:  1.000 (4/4)
+  Authoritative Evidence Coverage Rate: 1.000 (16/16)
+  Rewrite Recovery Rate:  1.000 (6/6)
   Contract fixtures: 0 failure(s) -- full report under --set contracts
 ```
 
@@ -130,17 +137,17 @@ Score distribution, used for the threshold sweep:
 ```text
 -- score distribution by category (raw top-1) --
   ambiguous n=2 min=0.2029 max=0.2249 all=[0.2029, 0.2249]
-  noisy     n=5 min=0.1187 max=0.2303 all=[0.1187, 0.1263, 0.1746, 0.1972, 0.2303]
-  normal    n=5 min=0.1446 max=0.2752 all=[0.1446, 0.2086, 0.2351, 0.2554, 0.2752]
+  noisy     n=7 min=0.1187 max=0.2303 all=[0.1187, 0.1263, 0.1551, 0.1555, 0.1746, 0.1972, 0.2303]
+  normal    n=7 min=0.1446 max=0.2752 all=[0.1446, 0.2044, 0.207, 0.2086, 0.2351, 0.2554, 0.2752]
   ood       n=4 min=0.0706 max=0.1773 all=[0.0706, 0.0798, 0.0858, 0.1773]
   unsupported n=5 min=0.0737 max=0.2237 all=[0.0737, 0.096, 0.1814, 0.1884, 0.2237]
 ```
 
 ## Held-out set — reporting split, run after the thresholds were frozen
 
-Run once, after the thresholds were re-swept and frozen on the calibration
-split, and never tuned against. `--strict` exits `1` on the single coverage
-miss, which is the gate working as designed.
+Run once, after the alias catalog change was frozen on the calibration split,
+and never tuned against. `--strict` exits `1` on the single coverage miss, which
+is the gate working as designed.
 
 ```text
 == retrieval set: heldout (14 cases) ==
@@ -175,19 +182,23 @@ thresholds: REWRITE_FLOOR=0.1, DIRECT_ANSWER_THRESHOLD=0.19, FINAL_ANSWER_THRESH
   Contract fixtures: 0 failure(s) -- full report under --set contracts
 ```
 
-`ho_noisy_03` — "sa-lip-on-ngoen chai thaen bai-set dai mai" — reaches 0.1986
-after expansion against a 0.21 threshold. Deterministic alias expansion lifts it
-from 0.1412 raw to 0.1913, and the cached rewrite adds a further 0.0073; neither
-is enough. It is a representation gap, and closing it by moving the threshold is
-forbidden: the same move would readmit the unsupported in-domain cases the gate
-is there to refuse.
+`ho_noisy_03` — "sa-lip-on-ngoen chai thaen bai-set dai mai" — still reaches
+0.1986 after expansion against a 0.21 threshold, unchanged by this round. The
+representation work that recovered its *pattern* on the calibration split did
+not recover this case: the alias expansion picks the three aliases closest to
+the query, and this query already contains two of them literally, so the new
+corpus-wording aliases never enter its variants. Closing it by moving the
+threshold stays forbidden — the same move would readmit the unsupported
+in-domain cases the gate exists to refuse.
 
 ## Near-domain set — hard negatives with their benign twins
 
 Fourteen eligibility questions about expense items this corpus has no rule for,
 each within one word of a question it does answer, plus six of those benign
 twins as the control. A catalog wide enough to refuse the first is wide enough
-to refuse the second if nobody measures both.
+to refuse the second if nobody measures both. The two aliases added this round
+are measured here as well as on calibration, because a widened topic is exactly
+what this set exists to catch.
 
 ```text
 == retrieval set: near_domain (20 cases) ==
@@ -210,7 +221,7 @@ thresholds: REWRITE_FLOOR=0.1, DIRECT_ANSWER_THRESHOLD=0.19, FINAL_ANSWER_THRESH
   nd_benign_02       normal      raw=0.2408 band=high   predicted=answered expected=answered ok
   nd_benign_03       normal      raw=0.2745 band=high   predicted=answered expected=answered ok
   nd_benign_04       noisy       raw=0.1187 expanded=0.2971 band=medium predicted=answered expected=answered ok
-  nd_benign_05       normal      raw=0.1446 expanded=0.2275 band=medium predicted=answered expected=answered ok
+  nd_benign_05       normal      raw=0.1446 expanded=0.2746 band=medium predicted=answered expected=answered ok
   nd_benign_06       normal      raw=0.3299 band=high   predicted=answered expected=answered ok
 -- metrics --
   Retrieval Hit@3:      1.000 (6/6)
@@ -281,16 +292,15 @@ thresholds: REWRITE_FLOOR=0.1, DIRECT_ANSWER_THRESHOLD=0.19, FINAL_ANSWER_THRESH
 
 ## Contract fixtures — citations and rewrite pairs
 
-Reported once, in their own set. They used to print under every retrieval run,
-which made one measurement appear as two in this file. `--strict` still gates on
-them from any retrieval run; only the printing moved.
+Reported once, in their own set. `--strict` still gates on them from any
+retrieval run; only the printing moved.
 
 ```text
 == contract fixtures: citations, rewrite pairs ==
 -- metrics --
-  Citation Provenance Validity Rate: 1.000 (19/19)
-  Claim Source Coverage Rate:        0.800 (16/20)
-  Invalid Candidate Leakage Rate:    0.000 (0/15)
+  Citation Provenance Validity Rate: 1.000 (23/23)
+  Claim Source Coverage Rate:        0.833 (20/24)
+  Invalid Candidate Leakage Rate:    0.000 (0/17)
   Rewrite Intent Preservation Rate:   1.000 (20/20)
 ```
 
@@ -301,13 +311,16 @@ them from any retrieval run; only the printing moved.
   emits one placeholder claim citing the authoritative evidence, so it exercises
   the real citation validator and the real promote rule — but no wording here is
   a model's. `eval/ANSWER_RESULTS.md` is the artifact that reads answers.
-* **Entailment.** A claim citing the right policy can still misread it. The live
-  set checks fact-citation containment, which is closer, and still not
-  entailment.
-* **The counts are small.** 21, 14, 42, 20, 19 and 20 curated cases over eight
+* **Entailment.** A claim citing the right policy can still misread it. The
+  numeric rule added this round proves a figure is present in the cited text,
+  which is closer, and still not entailment.
+* **Latency and cost.** No provider is called here, so nothing in this file
+  measures the request deadline or the claim cap. Their wall-clock evidence is
+  in `eval/ANSWER_RESULTS.md`.
+* **The counts are small.** 25, 14, 42, 20, 23 and 20 curated cases over eight
   documents. Regression evidence, not statistical claims.
 * **Held-out queries were visible in the repository** while the thresholds were
   chosen. "Unseen" means "not used for tuning", not "never read".
-* **`Claim Source Coverage Rate: 16/20`** describes the labelled citation
-  fixture, which deliberately mixes grounded and ungrounded claims. It is not a
+* **`Claim Source Coverage Rate`** describes the labelled citation fixture,
+  which deliberately mixes grounded and ungrounded claims. It is not a
   measurement of live Reporter behaviour.

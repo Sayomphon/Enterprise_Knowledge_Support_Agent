@@ -33,7 +33,7 @@ brief is confidential and is not reproduced or included in this repository.
 | **1. Data ingestion** — 5–10 mock documents mixing clear procedural policy with short, noisy chat messages containing slang, typos, and ambiguous content | [`data/docs/`](../data/docs/) — 8 Markdown files, 5 `policy` + 3 `chat`, loaded by [`src/ingestion/loader.py`](../src/ingestion/loader.py) | [`tests/test_loader.py`](../tests/test_loader.py) — all 8 load, duplicate `source_id` fails, missing title fails, `authority` must agree with `source_type`; the loaded index is shown in [the console](screenshots/ui_10_console_kb.png) |
 | **2a. Retrieval and generation pipeline** | [`src/graph.py`](../src/graph.py) — 10 nodes, 18 edges, 5 routes; retrieval in [`src/retrievers/local_tfidf.py`](../src/retrievers/local_tfidf.py), generation in [`src/agents/reporter.py`](../src/agents/reporter.py) | [`tests/test_graph.py`](../tests/test_graph.py) — every route asserted, including the LLM call count per route; [`tests/test_retrieval.py`](../tests/test_retrieval.py) for exact, typo, and out-of-domain queries |
 | **2b. Guardrail / validation layer** — out-of-scope questions and prompt injection are declined politely | [`src/guardrails/input_guardrail.py`](../src/guardrails/input_guardrail.py) (13 named rules), [`src/guardrails/scope_validator.py`](../src/guardrails/scope_validator.py) (topic gate); refusal wording in [`src/fallback.py`](../src/fallback.py) | [`tests/test_guardrail.py`](../tests/test_guardrail.py) and [`tests/test_scope_validator.py`](../tests/test_scope_validator.py); measured as Injection Block Rate 21/21 **and** Benign Pass Rate 21/21 in [`eval/RESULTS.md`](../eval/RESULTS.md); the refusal an employee actually sees is [this screenshot](screenshots/ui_04_blocked.png) |
-| **2c. Source attribution** — every answer names its document | [`src/guardrails/citation_validator.py`](../src/guardrails/citation_validator.py) validates, [`src/answer_renderer.py`](../src/answer_renderer.py) renders the markup | [`tests/test_citations.py`](../tests/test_citations.py); Citation Provenance Validity Rate 19/19 in [`eval/RESULTS.md`](../eval/RESULTS.md); worked output in [Demo](demo.md#the-six-examples), rendered as per-claim chips and expandable evidence in [the answer card](screenshots/ui_02_answered.png) |
+| **2c. Source attribution** — every answer names its document | [`src/guardrails/citation_validator.py`](../src/guardrails/citation_validator.py) validates, [`src/answer_renderer.py`](../src/answer_renderer.py) renders the markup | [`tests/test_citations.py`](../tests/test_citations.py); Citation Provenance Validity Rate 23/23 in [`eval/RESULTS.md`](../eval/RESULTS.md); worked output in [Demo](demo.md#the-six-examples), rendered as per-claim chips and expandable evidence in [the answer card](screenshots/ui_02_answered.png) |
 | **3. Evaluation and fallback** — when the system finds nothing, or the *confidence score* falls below a threshold, reply with a prepared fallback message and log that question for later analysis | Thresholds in [`src/config.py`](../src/config.py), fallback texts in [`src/fallback.py`](../src/fallback.py), JSONL writer in [`src/logging_utils.py`](../src/logging_utils.py) | [`tests/test_fallback.py`](../tests/test_fallback.py), [`tests/test_logging_utils.py`](../tests/test_logging_utils.py); harness in [`eval/run_eval.py`](../eval/run_eval.py), results in [`eval/RESULTS.md`](../eval/RESULTS.md); a real log line is shown in [section 11](#logging-and-privacy), and the operator's view of that log — reason codes, scores, and the resulting corpus backlog — in [the audit console](demo.md#7-the-audit-console-where-requirement-3-becomes-inspectable) |
 | **D. Deliverables** — runnable repo with `requirements.txt` and a setup README | [`requirements.txt`](../requirements.txt) (9 pinned direct dependencies), [Quick start](../README.md#2-quick-start) | The Quick start commands were run end to end in a fresh virtualenv on Python 3.11.15; the resulting output is [`eval/RESULTS.md`](../eval/RESULTS.md) |
 
@@ -137,7 +137,7 @@ collisions stop being manageable.
 **No embeddings and no vector database, deliberately.** With eight documents, an
 embedding index would add an API dependency or a model download, a similarity
 space nobody can inspect by eye, and no measurable recall benefit — Retrieval
-Hit@3 is already 12/12 on calibration and 7/7 on held-out. The options were
+Hit@3 is already 16/16 on calibration and 7/7 on held-out. The options were
 embeddings plus a vector store, a hybrid of BM25 and dense retrieval, or staying
 lexical. Staying lexical also keeps the whole retrieval path runnable with no
 credential, which is what makes the offline test suite and the zero-key demo
@@ -268,7 +268,7 @@ sequenceDiagram
         alt every claim satisfies the contract
             VC-->>E: answer plus [SOURCE-ID] citations rendered from validated ids
             Note over VC,L: an answered request writes nothing to the log
-        else a claim is uncited, fabricated, or structurally broken
+        else a claim is uncited, fabricated, numerically unsupported, or broken
             VC->>L: append the reason code only, never the rejected draft
             VC-->>E: fixed fallback text
         end
@@ -301,7 +301,7 @@ rule is paired with a benign counter-example by `rule_id`.
 | Input guardrail | 13 named regex rules screen the query before the first LLM call | Detect novel phrasings, or anything semantic |
 | Rewrite re-screen | The same screen runs again on every model-generated rewrite candidate | Prevent a model from being confused by benign-looking text |
 | Evidence encoding | Retrieved text is `json.dumps`-encoded into the human message; the system prompt declares those values untrusted data | Solve indirect prompt injection |
-| Output validation | Claims are validated against the evidence ID set and its policy subset | Verify that a claim is true |
+| Output validation | Claims are validated against the evidence ID set, its policy subset, and the figures the cited documents actually state | Verify that a claim is true |
 
 Matching runs on hardened foldings of the input — NFKC, separator folding, case
 folding — and on **two** treatments of zero-width characters rather than one.
@@ -352,11 +352,13 @@ Every blocked and fallback event appends one JSON object to
   "raw_retrieval_score": 0.06,
   "expanded_retrieval_score": null,
   "top_sources": ["HR-003"],
-  "rewritten_queries": []
+  "rewritten_queries": [],
+  "latency_ms": 118,
+  "llm_calls": 0
 }
 ```
 
-Eighteen reason codes are defined as an enum in
+Twenty reason codes are defined as an enum in
 [`src/fallback.py`](../src/fallback.py); ad-hoc strings are not permitted, and the
 complete set is:
 
@@ -367,13 +369,19 @@ complete set is:
 | Retrieval score | `low_retrieval_score`, `rewrite_low_retrieval_score` |
 | Rewrite | `rewrite_failure`, `rewrite_rejected` |
 | Answer service | `llm_not_configured`, `reporter_failure` |
+| Request budget | `request_deadline_exceeded` |
 | Deterministic stage crash | `retrieval_failure`, `evidence_failure` |
-| Answer contract | `missing_citation`, `fabricated_citation`, `invalid_answer_structure`, `insufficient_reporter_evidence` |
+| Answer contract | `missing_citation`, `fabricated_citation`, `invalid_answer_structure`, `insufficient_reporter_evidence`, `unsupported_numeric_claim` |
 
-Two of these exist specifically so a degraded request is not mislabelled.
-`llm_not_configured` keeps a missing credential from being reported to an
-employee as insufficient evidence, and `rewrite_rejected` separates "every
-rewrite drifted" from "the corpus does not have this".
+Several of these exist specifically so a degraded request is not mislabelled.
+Five of them -- `llm_not_configured`, `reporter_failure`, `rewrite_failure`,
+`retrieval_failure` and `evidence_failure` -- name a stage that could not run,
+so `src/fallback.py` answers them with the service-unavailable text instead of
+the insufficient-evidence one: an employee told that no policy was found would
+go and ask HR about a rule the pipeline never read. `rewrite_rejected` is not in
+that family and keeps the evidence wording, because there the rewriter worked
+and the deterministic validator refused its output; it separates "every rewrite
+drifted" from "the corpus does not have this".
 Only *executed* rewrites are logged — a candidate the validator rejected is model
 output about the user's question and never enters the record. The same holds for
 a rejected candidate answer: the log carries its reason code, never its text.
@@ -442,7 +450,7 @@ its own. The provenance of each, from the 2026-08-20 sweep over
 |---|---:|---|
 | `REWRITE_FLOOR` | 0.10 | The widest observed gap in the calibration set: generic out-of-domain queries top out at raw **0.0858**, while the weakest answerable case scores **0.1187**. The floor sits between them, so an out-of-domain question is never rewritten into the domain. |
 | `DIRECT_ANSWER_THRESHOLD` | 0.19 | The salary hard negative scores raw **0.1773**; the next answerable case scores **0.1972**. Answering directly starts above the hard negative. |
-| `FINAL_ANSWER_THRESHOLD` | 0.21 | Recalibrated down from 0.24 once the scope gate took over hard-negative rejection. At 0.24 the weakest answerable slang case (expanded **0.2176**) was indistinguishable from the salary hard negative (**0.2152**) and lost its answer. At 0.21 calibration coverage is 12/12 with precision still 12/12, and 0.21 stays above the highest expanded score seen for an unsupported in-domain case (**0.1884**). The trade-off is explicit: precision on this band now rests on the scope gate, so weakening the scope catalog would weaken this threshold too. |
+| `FINAL_ANSWER_THRESHOLD` | 0.21 | Recalibrated down from 0.24 once the scope gate took over hard-negative rejection. At 0.24 the weakest answerable slang case (expanded **0.2176**) was indistinguishable from the salary hard negative (**0.2152**) and lost its answer. At 0.21 calibration coverage is 16/16 with precision still 16/16 on the 25-case split, and 0.21 stays above the highest expanded score seen for an unsupported in-domain case (**0.1884**). The trade-off is explicit: precision on this band now rests on the scope gate, so weakening the scope catalog would weaken this threshold too. |
 | `SCOPE_MATCH_THRESHOLD` | 0.40 | Every answerable case resolves its topic at **0.5714** or above (the weakest is the `ลาพักรอ้น` typo; exact and slang aliases score 1.0000), while the strongest case that must *not* resolve scores **0.1667**. 0.40 sits near the midpoint of that gap. |
 | `REWRITE_CONTINUITY_THRESHOLD` | 0.05 | Valid normalisations in [`eval/rewrite_cases.json`](../eval/rewrite_cases.json) score **0.0756** to **0.3178**; a rewrite that replaces the question wholesale scores **0.0086** or less. This is a floor against wholesale replacement only — drift that stays lexically close, such as 500 baht becoming 5,000, is caught by the anchor and topic rules instead. |
 
@@ -458,7 +466,14 @@ way in the CLI and the UI, and it is never presented as a confidence percentage.
 ## Repository map
 
 ```text
-├── app.py                     # Streamlit UI — presentation only
+├── app.py                     # Streamlit entry point — page composition only
+├── ui/                        # Streamlit presentation layer (ui -> src, never back)
+│   ├── labels.py              # User-facing strings and display constants
+│   ├── styles.py              # Design-system stylesheets
+│   ├── formatting.py          # Pure value -> markup functions (unit-tested)
+│   ├── runtime.py             # Cached graph, retriever, session record
+│   ├── assistant.py           # Employee page
+│   └── console.py             # Operations and audit page
 ├── main.py                    # CLI entry point — argument parsing only
 ├── src/
 │   ├── config.py              # Typed settings loaded from env, single source
@@ -526,7 +541,7 @@ These are the rest — real, and narrower.
 | `Retriever` protocol | character TF-IDF | see the escalation table below |
 | Retrieval unit | whole document | chunking with hierarchical citation IDs |
 | Scope gate | closed alias catalog | facet-based gate, default-deny on eligibility, coverage metadata in document frontmatter |
-| Answer validation | provenance + coverage + fact containment | claim entailment model or LLM-as-judge faithfulness pass |
+| Answer validation | provenance + coverage + numeric consistency + fact containment | claim entailment model or LLM-as-judge faithfulness pass |
 | `config.py` | env vars | secret manager, per-tenant configuration |
 | `logging_utils` | JSONL file | structured logging → OpenTelemetry → warehouse, with PII redaction and retention |
 | Guardrail module | regex screen | layered classifier + policy engine + indirect-injection defences |

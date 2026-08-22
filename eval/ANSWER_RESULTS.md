@@ -252,3 +252,43 @@ test pins the behaviour
 every call a second time. The numbers above are from the corrected run. The
 original figure is recorded here because a metric that moved from 0.745 to 0.000
 between runs deserves an explanation attached to it, not a quiet replacement.
+
+
+## Wall clock after the claim cap and the request deadline (2026-08-22)
+
+The set above was measured before answers were capped at six claims and before a
+single deadline covered both LLM boundaries. Both changes are about the wait an
+employee sees, and no offline set can measure that, so three demo queries were
+re-run live against the committed defaults -- `LLM_TIMEOUT_SECONDS=30`,
+`REQUEST_DEADLINE_SECONDS=45`, `gpt-5-mini`, one run each, three provider calls
+in total.
+
+| Query | Route | Provider calls | Claims | Answer chars | Wall clock |
+|---|---|---:|---:|---:|---:|
+| ขั้นตอนการเบิกค่าแท็กซี่หลังทำ OT ต้องทำอย่างไร | `answered` | 1 | 4 | 872 | **22.3 s** |
+| ใบเสร็จหายต้องทำอย่างไรถึงจะเบิกได้ | `answered` | 1 | 4 | 501 | **13.9 s** |
+| เบิกตังค่า taxi ได้ปะ | `fallback` (`rewrite_low_retrieval_score`) | 1 | 0 | 0 | **7.2 s** |
+
+The first query is the one that produced the nine-claim, 29.6-second answer
+recorded in [`docs/demo.md`](../docs/demo.md): the same question now answers in
+four claims and 22.3 seconds, against the same 30-second reporter timeout. The
+claim count is the mechanism -- the cap travels into the JSON schema sent with
+the request, so the model is told the bound instead of having its answer
+truncated afterwards.
+
+**What this does not show.** n = 1 per query on one model on one day, so the
+seconds are an order of magnitude, not a measurement. Nothing here exercised the
+deadline itself: no boundary ran out of budget, which is what the mocked-clock
+route tests in
+[`tests/test_graph.py::TestRequestDeadline`](../tests/test_graph.py) cover
+instead. And the deadline is a ceiling on *starting* a call, not a cancellation
+of one in flight -- a reporter that starts with 40 seconds of budget and a
+30-second timeout can still finish at 70 seconds of wall clock.
+
+The third row is the medium-band instability this file already documents. It
+degraded differently this time: the rewrite ran and returned inside its budget
+(one provider call, no timeout), and the expanded score still landed under
+`FINAL_ANSWER_THRESHOLD`, so the request fell back as
+`rewrite_low_retrieval_score` rather than as a rewrite failure. Same route, a
+different reason code, and both are the pipeline reporting what actually
+happened.

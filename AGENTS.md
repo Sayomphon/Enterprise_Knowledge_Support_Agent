@@ -40,7 +40,7 @@ If a change adds a feature but weakens 1–4, **do not make it**. Propose it as 
 | Orchestration | LangGraph (typed state, conditional edges) |
 | Retrieval | Local character n-gram TF-IDF (scikit-learn) + cosine similarity |
 | LLM | `langchain-openai` `ChatOpenAI`, model configurable via env |
-| UI | Streamlit (`app.py`), CLI (`main.py`) as guaranteed fallback |
+| UI | Streamlit (`app.py` + `ui/`), CLI (`main.py`) as guaranteed fallback |
 | Logs | Append-only JSONL, no external infrastructure |
 | Tests | `unittest` + mocks, **offline-first** |
 
@@ -120,8 +120,16 @@ insufficient**. Never add an LLM call to a path that a rule can decide.
 LLM call budget per request: blocked = 0, clear out-of-domain = 0,
 unsupported in-domain topic = 0, strong retrieval = 1 (Reporter), medium band
 = 1 when the alias catalog settles the score, 2 otherwise (Rewriter +
-Reporter). On the 21-case calibration set the deterministic expansion cut the
-medium band's rewrite calls from 4 to 1.
+Reporter). On the 25-case calibration set six cases reach the medium band and
+the alias catalog settles five of them, so the deterministic expansion cut that
+band's rewrite calls from 4 to 1.
+
+One deadline covers both boundaries. `REQUEST_DEADLINE_SECONDS` bounds the
+whole request; each boundary is offered only what is left of it, the optional
+rewrite is skipped once nothing is, and a reporter reached that late degrades
+as `request_deadline_exceeded` rather than starting a call the employee will
+not wait for. The per-boundary timeouts stay: they cap one stalled call, this
+caps the request that contains them.
 
 Credentials are checked at the LLM boundary, never at start-up: the zero-LLM
 routes above must stay demonstrable without a key. A key missing at the
@@ -134,7 +142,14 @@ employee as insufficient evidence.
 ## 3. Repository Map & Layering
 
 ```text
-├── app.py                     # Streamlit UI — presentation only
+├── app.py                     # Streamlit entry point — page composition only
+├── ui/                        # Streamlit presentation layer (ui -> src, never back)
+│   ├── labels.py              # User-facing strings and display constants
+│   ├── styles.py              # Design-system stylesheets
+│   ├── formatting.py          # Pure value -> markup functions (unit-tested)
+│   ├── runtime.py             # Cached graph, retriever, session record
+│   ├── assistant.py           # Employee page
+│   └── console.py             # Operations and audit page
 ├── main.py                    # CLI entry point — argument parsing only
 ├── src/
 │   ├── config.py              # Typed settings loaded from env, single source
@@ -168,7 +183,7 @@ employee as insufficient evidence.
 ### Dependency direction (enforced, no exceptions)
 
 ```text
-app.py / main.py  ──►  src.graph  ──►  src.agents / src.guardrails
+app.py / ui/* / main.py  ──►  src.graph  ──►  src.agents / src.guardrails
                                             │
                                             ▼
                  src.evidence_selector / src.answer_renderer
@@ -182,7 +197,9 @@ app.py / main.py  ──►  src.graph  ──►  src.agents / src.guardrails
 * Retrievers, guardrails, and the loader **never** import `graph.py`.
 * UI/CLI layers contain **no business logic** — they call the compiled graph
   and render `PipelineState`. If a Streamlit change requires new logic, that
-  logic goes into `src/`, with a test.
+  logic goes into `src/`, with a test. Inside `ui/`, anything that turns a value
+  into markup belongs in `ui/formatting.py`, where it is a pure function a test
+  can hold; `st.*` calls belong in the page modules.
 * Only `src/agents/*` may call an LLM. Nothing else touches the network.
 
 ---
@@ -203,7 +220,10 @@ Violating any of these is a defect, even if tests pass.
 4. **Every factual claim carries validated `[SOURCE-ID]` citations**, and every
    cited ID must belong to the answer evidence selected for that request. The
    model does not write the markup: the renderer emits it from validated IDs.
-   Missing, uncited, fabricated, or structurally broken output routes to
+   Every number and clock time a claim states must also appear in a document
+   that claim cites or in the employee's question, because provenance alone
+   cannot see a wrong figure under a right citation. Missing, uncited,
+   fabricated, numerically unsupported, or structurally broken output routes to
    fallback — never to `END`, and never into the public `answer`.
 4b. **Policy is authoritative, chat is supplementary.** A normative answer needs
    at least one active policy document covering the query's topic; chat
@@ -414,7 +434,9 @@ schema:
   "expanded_retrieval_score": null,
   "top_sources": ["HR-003"],
   "rewritten_queries": [],
-  "alias_query_count": 0
+  "alias_query_count": 0,
+  "latency_ms": 118,
+  "llm_calls": 0
 }
 ```
 
@@ -423,7 +445,11 @@ band searched, and is `0` on every other route. The variants themselves are not
 written: their text is recoverable from the topic catalog and the resolved
 topics, so quoting them in every medium-band record would grow an unrotated
 file to say nothing new. `rewritten_queries` keeps its old meaning exactly —
-executed *model* rewrites only.
+executed *model* rewrites only. `latency_ms` and `llm_calls` record what
+the request cost before it degraded: without them a
+`request_deadline_exceeded` record asserts a timing an operator cannot
+check, and a rewrite the budget skipped is indistinguishable from one
+that ran.
 
 Reason codes (extend the enum, never invent ad-hoc strings):
 `prompt_injection`, `low_retrieval_score`, `rewrite_low_retrieval_score`,
@@ -432,7 +458,8 @@ Reason codes (extend the enum, never invent ad-hoc strings):
 `retrieval_failure`, `evidence_failure`,
 `unsupported_topic`, `no_authoritative_evidence`, `rewrite_rejected`,
 `invalid_answer_structure`, `insufficient_reporter_evidence`,
-`llm_not_configured`.
+`unsupported_numeric_claim`, `llm_not_configured`,
+`request_deadline_exceeded`.
 
 `rewrite_failure` and `llm_not_configured` are what the fallback node records
 when the rewriter produced nothing: the medium band exists because the original
@@ -500,8 +527,8 @@ not read at all, rather than read and then hidden.
 
 ## 10. Evaluation Discipline
 
-* `eval/retrieval_calibration.json` (21 cases, including in-domain hard
-  negatives) is for **tuning only**: n-gram configuration, `REWRITE_FLOOR`,
+* `eval/retrieval_calibration.json` (25 cases, including in-domain hard
+  negatives and paraphrased receipt questions) is for **tuning only**: n-gram configuration, `REWRITE_FLOOR`,
   `DIRECT_ANSWER_THRESHOLD`, `FINAL_ANSWER_THRESHOLD`, `SCOPE_MATCH_THRESHOLD`,
   `REWRITE_CONTINUITY_THRESHOLD`.
 * `eval/retrieval_heldout.json` (14 cases) is for **reporting only**. Run it once,
@@ -511,7 +538,10 @@ not read at all, rather than read and then hidden.
   lookalike, and every `InjectionRule` is paired with a benign counter-example
   in `tests/test_guardrail.py`.
 * `eval/citation_cases.json` holds labelled candidate answers covering each
-  rejection reason of the answer contract plus valid claim shapes.
+  rejection reason of the answer contract plus valid claim shapes. A case whose
+  claim states a figure must carry the evidence body that figure comes from, so
+  the numeric rule is scored against documents rather than against a
+  placeholder.
 * `eval/rewrite_cases.json` holds labelled rewrite pairs, balanced between valid
   normalisations and each drift shape the validator must reject.
 * `eval/near_domain_cases.json` holds eligibility questions about items the
@@ -659,7 +689,7 @@ docs: record calibrated thresholds and held-out metrics
 * Writing model output straight into the public `answer` field.
 * Widening injection regexes until benign enterprise questions get blocked.
 * Adding a vector database, embedding API, or model download to "improve quality".
-* Putting business logic inside `app.py` or `main.py`.
+* Putting business logic inside `app.py`, `ui/`, or `main.py`.
 * Silent `except Exception: pass`.
 * Logging prompts, provider payloads, or environment variables for debugging.
 * Telling a user their question was recorded when the append failed.

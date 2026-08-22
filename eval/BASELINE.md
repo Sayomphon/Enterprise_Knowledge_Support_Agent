@@ -837,3 +837,153 @@ short. Nothing here was moved to close it, and nothing should be: the same
 threshold change would readmit the unsupported in-domain cases the scope gate
 exists to refuse. Recovering it through representation rather than thresholds is
 tracked as a separate piece of work.
+
+
+---
+
+# Phase 10 snapshot — P1 remediation (2026-08-22)
+
+Recorded after P1-1 to P1-6: the service-failure wording fix, the numeric-anchor
+claim rule, the per-request deadline with its claim cap, the `ui/` split with
+its formatter tests, the indirect-injection end-to-end tests with the ingestion
+screen, and the representation work on the held-out coverage miss.
+
+Two fixtures grew, so their metrics are not comparable case-for-case with the
+Phase 9 block above: the calibration split went from 21 to 25 cases (four
+receipt-slang questions) and the citation fixture from 19 to 23 (the numeric
+rule). Each historical block keeps the numbers it was measured under.
+
+## What changed in the pipeline
+
+| Change | Where | Visible as |
+|---|---|---|
+| Stage failures answer with the service text, not the evidence text | `src/fallback.py` | wording only; no route moved |
+| Numeric anchors of a claim must exist in a document it cites or in the query | `src/guardrails/citation_validator.py` | new reason code `unsupported_numeric_claim`, citation fixture 23/23 |
+| One deadline shared by both LLM boundaries, answers capped at six claims | `src/config.py`, `src/graph.py`, `src/schemas.py` | new reason code `request_deadline_exceeded`; offline metrics unchanged |
+| Two aliases taken from `FIN-002`'s own wording | `src/guardrails/scope_validator.py` | calibration coverage 15/16 -> 16/16 |
+| `latency_ms` and `llm_calls` in every JSONL record | `src/logging_utils.py` | telemetry only |
+
+## Representation ablation — why the index was left alone
+
+Run on the 25-case calibration split with the committed thresholds, after the
+four receipt-slang cases were added. Every cell is Coverage / Recall@1, and the
+"OOD margin" column is the strongest generic out-of-domain score against the
+weakest answerable one, which is what `REWRITE_FLOOR = 0.10` has to sit between.
+
+```text
+n-gram  title_weight  Coverage  Recall@1  Precision  OOD margin (floor 0.10)
+(2,5)   1 [committed]   15/16     14/16      15/15    0.0858 .. 0.1187  ok
+(2,5)   2               16/16     15/16      16/16    0.0968 .. 0.1144  ok
+(2,5)   3               15/16     16/16      15/15    0.1018 .. 0.1109  floor breached
+(2,4)   1               16/16     15/16      16/16    0.1029 .. 0.1337  floor breached
+(2,4)   2               16/16     15/16      16/16    0.1162 .. 0.1288  floor breached
+(2,4)   3               16/16     15/16      16/16    0.1223 .. 0.1249  floor breached
+(3,5)   1               10/16     14/16      10/10    coverage collapse
+(3,5)   2               10/16     16/16      10/10    coverage collapse
+(3,5)   3               11/16     16/16      11/11    coverage collapse
+```
+
+Both columns that scored 16/16 were rejected:
+
+* **(2,4)** pushes the strongest generic out-of-domain query to 0.1029, above
+  `REWRITE_FLOOR`. The scope gate would still refuse it, but separation the
+  score itself should provide must not be delegated to the layer behind it.
+* **title_weight = 2** reorders an exact policy question: "how do I claim a taxi
+  fare after OT" ranks `CHAT-001` (0.2756) above `FIN-001` (0.2285), because a
+  chat title is short and echoes the question. Ranking a transcript above the
+  policy it illustrates is worse than the case it recovers.
+
+What was adopted instead is data: two aliases lifted from the first line of
+`FIN-002` itself. They cost nothing in precision — near-domain stays 14/14 and
+6/6 — and the `title_weight` parameter stays in the retriever as the seam the
+next ablation will use.
+
+## Measured results
+
+```text
+Offline unit tests: 431/431 passed
+
+Calibration (25 cases), strict exit 0:
+  Retrieval Hit@3                          16/16
+  Retrieval Recall@1                       15/16
+  Retrieval MRR 0.969, best expected source
+  Answer-route Selection Precision         16/16
+  Answer-route Coverage                    16/16
+  False Fallback Rate                       0/16
+  OOD Fallback Accuracy                      4/4
+  Unsupported In-domain Fallback Accuracy    5/5
+  Overall Fallback Accuracy                  9/9
+  Authoritative Evidence Coverage Rate     16/16
+  Rewrite Recovery Rate                      6/6
+
+Near-domain (20 cases), strict exit 0:
+  Retrieval Hit@3                            6/6
+  Retrieval Recall@1                         5/6
+  Answer-route Selection Precision           6/6
+  Answer-route Coverage                      6/6
+  Unsupported In-domain Fallback Accuracy  14/14
+  Rewrite Recovery Rate                      2/2
+
+Guardrail (42 cases), strict exit 0:
+  Injection Block Rate                     21/21
+  Benign Pass Rate                         21/21
+
+Contracts (43 cases), strict exit 0:
+  Citation Provenance Validity Rate        23/23
+  Claim Source Coverage Rate               20/24
+  Invalid Candidate Leakage Rate            0/17
+  Rewrite Intent Preservation Rate         20/20
+
+Held-out (14 cases), strict exit 1:
+  Retrieval Hit@3                            7/7
+  Retrieval Recall@1                         7/7
+  Retrieval MRR 1.000, best expected source
+  Answer-route Selection Precision           6/6
+  Answer-route Coverage                      6/7   <- the one gate failure
+  False Fallback Rate                        1/7
+  OOD Fallback Accuracy                      3/3
+  Unsupported In-domain Fallback Accuracy    4/4
+  Overall Fallback Accuracy                  7/7
+  Authoritative Evidence Coverage Rate       6/6
+  Rewrite Recovery Rate                      1/2
+
+Live wall clock (3 demo queries, gpt-5-mini, 3 calls):
+  Taxi after OT           22.3s, 4 claims, 1 call, answered
+  Lost receipt            13.9s, 4 claims, 1 call, answered
+  Taxi slang              7.2s, 0 claims, 1 call, fallback
+  Prior 9-claim answer to the first query measured 29.6s
+```
+
+Commands used:
+
+```bash
+OPENAI_API_KEY= python -m unittest discover -s tests
+OPENAI_API_KEY= python eval/run_eval.py --set calibration --strict
+OPENAI_API_KEY= python eval/run_eval.py --set near_domain --strict
+OPENAI_API_KEY= python eval/run_eval.py --set guardrail --strict
+OPENAI_API_KEY= python eval/run_eval.py --set contracts --strict
+OPENAI_API_KEY= python eval/run_eval.py --set heldout --strict
+# ablation matrix, one run per cell
+OPENAI_API_KEY= python eval/run_eval.py --set calibration \
+    --ngram 2,4 --title-weight 2 --distribution
+```
+
+Repeated on a clean Python 3.11.15 virtualenv built from the pinned
+`requirements.txt`: 431 tests pass, `main.py --check` runs, the `ui` package
+imports, and the four offline gates exit 0. No dependency was added this round;
+the check exists because `ui/` is a new package and a package that only imports
+from an already-warm environment has not been proven to install.
+
+## The held-out miss survived the representation work
+
+`ho_noisy_03` still reaches 0.1986 against 0.21. The receipt-slang *pattern* was
+recovered on the calibration split -- all four new cases route to `answered` --
+but this particular query did not move at all, and the reason is mechanical: the
+expansion picks the three aliases closest to the query, and this query already
+contains two receipt aliases literally, so the corpus-wording aliases that
+lifted the others never enter its variants. Choosing the top three by
+containment is itself a design decision that could be revisited; changing it was
+out of scope for this round and would need its own sweep.
+
+Nothing was moved to close the case. The threshold change that would close it
+readmits the unsupported in-domain cases the scope gate exists to refuse.
