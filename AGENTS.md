@@ -423,7 +423,7 @@ from external calls.
 | Output validation | The reporter returns claims, not prose. Every claim is validated at runtime against the answer-evidence ID set, its policy subset, and the body of the policy it quotes — trust the validator, not the model. Contract checks compare canonically folded text, so a figure or a citation spelled in another script is read as what it renders as. |
 | Path safety | The loader reads only from the configured corpus directory; resolve and verify paths, no traversal from user input. |
 | Logging hygiene | Log query text, reason code, scores, and top source IDs only. No API keys, no system prompts, no raw provider responses, no model metadata. |
-| Log privacy | The sink holds raw employee questions across sessions. It is never rendered in the employee view, and the console renders it only when `ENABLE_OPS_VIEW` is explicitly enabled. That flag is a demo switch, not authentication or RBAC, and must never be described as either. |
+| Log privacy | The sink holds employee questions across sessions. It is never rendered in the employee view, and the console renders it only when `ENABLE_OPS_VIEW` is explicitly enabled. That flag is a demo switch, not authentication or RBAC, and must never be described as either. The file is created `0600` inside a `0700` directory, rolls over at `LOG_MAX_BYTES` keeping `LOG_BACKUP_COUNT` pages, and the query text is redacted at the writer for four identifier shapes: Thai national id, account number, phone, email. The two length rules are Unicode-aware, so an id typed in Thai or fullwidth digits is masked as well. Redaction is a bounded safeguard, not a PII classifier, and must be described as such -- amounts, day counts and document ids stay intact on purpose, because a record that cannot explain a retrieval is not worth keeping. |
 | Dependencies | Pinned versions, direct dependencies only, installed from PyPI. |
 | Honesty | The README must state plainly that regex screening is a prototype safeguard, not defence-in-depth, and that claim-level validation proves provenance, coverage and span presence — never factual entailment, since a span quoted out of its condition still passes. Block rates are reported with their case count, never as universal security. |
 
@@ -499,7 +499,7 @@ exception type reaches stderr; the message may name a filesystem path.
 
 The query field is capped before it is written. A request rejected *for being
 too long* is still logged, and `MAX_QUERY_CHARS` bounds what the pipeline
-processes, not what reaches an append-only file with no rotation; an oversized
+processes, not what reaches the file; an oversized
 value is truncated and marked as truncated.
 
 Only executed rewrites are logged: candidates the validator rejected are model
@@ -542,9 +542,11 @@ not read at all, rather than read and then hidden.
     fails, real-but-not-selected ID fails, chat-only claim fails, broken structure
     fails, a quote absent from every cited policy fails, a quote found only in a
     chat document fails, and a figure outside the quote fails
-  * graph: at least six routes — injection→refusal, low→fallback, high→answer, medium→alias-expansion→answer with the rewrite seam never constructed, medium→rewrite→answer, fabricated citation→fallback — plus the invalid-answer routes, which must leave no public `answer` in the final state
+  * graph: at least six routes — injection→refusal, low→fallback, high→answer, medium→alias-expansion→answer with the rewrite seam never constructed, medium→rewrite→answer, fabricated citation→fallback — plus the invalid-answer routes, which must leave no public `answer` in the final state, a search that returns nothing, and an English question carried to a rendered answer
+  * seams: a crash in the input screen, in the scope stage, in retrieval or in the citation validator each leaves a reason code in the log rather than escaping `invoke`; a failed screen reaches neither the index nor a provider; and a failure escaping the graph reaches the UI as a service state, never as a traceback
   * query expansion: variants are a pure function of query and resolved topics, no topic yields no variant, and a document ranked by a variant is labelled `alias` rather than `original`
   * logging: successful append returns `ok=True`, an unwritable path returns `ok=False` without raising, the failure line names the exception type but not the path or query, the bounded reader returns the newest N rows and counts a partial line without rendering it
+  * log privacy: each redacted shape is masked and an ordinary Thai question is left untouched, a new sink is `0600` inside a `0700` directory and an existing wider one is narrowed, a full sink rotates with the newest record landing in the live page and the oldest page dropped, and concurrent writers leave every line decodable
   * credentials: a missing key raises at the agent boundary with no client constructed, blocked and low-score routes still finish, and the reporter route reports `llm_not_configured` rather than thin evidence
   * CLI: handled requests exit `0`, a start-up failure exits non-zero with the exception type only, and rendered text comes from the shared response selector
 * Every bug fix ships with the regression test that would have caught it.

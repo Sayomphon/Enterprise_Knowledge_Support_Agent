@@ -2,7 +2,10 @@
 .env
 
 # Runtime telemetry is machine-local; only the directory marker is tracked.
+# The trailing wildcard covers rotated pages (".jsonl.1"), which carry the
+# same employee questions as the live sink.
 logs/*.jsonl
+logs/*.jsonl.*
 
 # Local environments and tool caches.
 .venv/

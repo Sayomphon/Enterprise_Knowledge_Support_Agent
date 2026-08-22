@@ -16,11 +16,19 @@ recorded (remediation plan Finding 7).
 Reading back is bounded on purpose. A long-running local demo appends
 without limit, and the audit view only ever shows the newest rows, so the
 reader walks the file backwards from the end instead of loading it whole.
+
+Writing is bounded too. The sink holds employee questions across every
+session, so it is created private to the owner, identifier shapes are
+masked out of the query text, and the file rolls over at a configured
+size with a fixed number of pages kept -- a retention policy rather than
+a file that grows for as long as the demo runs (AGENTS.md section 7).
 """
 
 from __future__ import annotations
 
 import json
+import re
+import stat
 import sys
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -36,12 +44,59 @@ _TAIL_BLOCK_BYTES = 65536
 
 # Hard ceiling on the query text of one record. The bound lives at the
 # writer rather than at any one caller because this is the single choke
-# point into an append-only file with no rotation: a query rejected FOR
-# BEING TOO LONG is still logged, and the guardrail's own limit bounds
-# what the pipeline processes, not what reaches the sink. The marker keeps
-# a truncated record honest about being truncated.
+# point into the sink: a query rejected FOR BEING TOO LONG is still
+# logged, and the guardrail's own limit bounds what the pipeline
+# processes, not what reaches the file. Rotation bounds the file; this
+# bounds one record inside it, so a single oversized query cannot spend a
+# whole page. The marker keeps a truncated record honest about being
+# truncated.
 _MAX_LOGGED_QUERY_CHARS = 1000
 _TRUNCATION_MARKER = "...[truncated]"
+
+# The sink and its directory belong to the user the process runs as. The
+# file holds raw employee questions across sessions, so a mode any other
+# local account can read is a privacy defect on its own, independent of
+# what the questions contain (AGENTS.md section 7, "Log privacy").
+_SINK_FILE_MODE = 0o600
+_SINK_DIR_MODE = 0o700
+
+# Identifier shapes redacted out of the query text before it is written.
+# The list is deliberately short and specific: this is a bounded
+# safeguard, not a PII classifier, and each pattern is one shape whose
+# presence in an HR or Finance question is never the subject of the
+# question. Redaction runs at the writer because that is the single
+# choke point into the sink.
+#
+# Order matters. A Thai national id is exactly 13 digits and would
+# otherwise be swallowed by the account rule, and a mobile number is 10
+# digits long, which is where the account range starts. Every quantifier
+# is bounded and no pattern nests one repetition inside another, so the
+# same ReDoS discipline as the guardrail holds here (AGENTS.md
+# section 7): the local part of the email rule is a single bounded
+# character class, and its label groups are bounded on both axes.
+#
+# ``\d`` is Unicode-aware in Python, so the two length rules cover an
+# identifier typed in Thai or fullwidth digits as well as ASCII ones --
+# and the text is stored as the employee wrote it, since nothing here
+# folds it. The phone rule is the exception: it is anchored on a literal
+# ASCII "0", so a Thai-digit mobile number is masked by the account rule
+# instead, under the wrong label but not in the clear.
+#
+# Deliberately NOT redacted, and stated so the gap is a decision rather
+# than an oversight: amounts, day counts, dates and document ids. They
+# are what the record exists to explain, and they are all far shorter
+# than the ten digits where the account rule begins.
+_REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"[\w.+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,4}"
+        ),
+        "[EMAIL]",
+    ),
+    (re.compile(r"(?<!\d)\d{13}(?!\d)"), "[ID]"),
+    (re.compile(r"(?<!\d)0\d{8,9}(?!\d)"), "[TEL]"),
+    (re.compile(r"(?<!\d)\d{10,19}(?!\d)"), "[ACCT]"),
+)
 
 
 def log_fallback_event(
@@ -121,19 +176,26 @@ def log_fallback_event(
     try:
         record = {
             "timestamp": timestamp.isoformat(),
-            "query": _bounded_query(query),
+            "query": redact_query(_bounded_query(query)),
             "reason": str(reason),
             "raw_retrieval_score": raw_retrieval_score,
             "expanded_retrieval_score": expanded_retrieval_score,
             "top_sources": list(top_sources),
-            "rewritten_queries": list(rewritten_queries),
+            # A rewrite is the employee's own question in the model's
+            # words, so it can carry the identifiers they typed and is
+            # redacted on the same terms.
+            "rewritten_queries": [
+                redact_query(str(rewrite)) for rewrite in rewritten_queries
+            ],
             "alias_query_count": alias_query_count,
             "scope_topics": list(scope_topics),
             "scope_reason": None if scope_reason is None else str(scope_reason),
             "latency_ms": latency_ms,
             "llm_calls": llm_calls,
         }
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=_SINK_DIR_MODE)
+        _rotate_if_full(path)
+        _restrict_to_owner(path)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     # Serialization belongs inside the handler, not only the filesystem
@@ -151,6 +213,91 @@ def log_fallback_event(
         )
         return LogWriteResult(ok=False, error_type=type(exc).__name__)
     return LogWriteResult(ok=True)
+
+
+def redact_query(text: str) -> str:
+    """Mask the identifier shapes a question may carry into the sink.
+
+    Args:
+        text: Query or rewrite text as it would otherwise be written.
+
+    Returns:
+        The same text with national ids, account numbers, phone numbers
+        and email addresses replaced by their labels. Everything else is
+        returned untouched: the sink exists to debug retrieval, and a
+        record whose amounts and deadlines are masked cannot do that.
+    """
+    for pattern, label in _REDACTIONS:
+        text = pattern.sub(label, text)
+    return text
+
+
+def _restrict_to_owner(path: Path) -> None:
+    """Create the sink, or narrow an existing one, to owner-only access.
+
+    The committed sink used to be created at the process umask, which is
+    world-readable on a default macOS or Linux account, so an existing
+    file is corrected rather than only new ones created correctly.
+
+    Args:
+        path: Sink to create or narrow.
+
+    Raises:
+        OSError: If the file cannot be created or its mode changed; the
+            caller reports it as a failed write like any other.
+    """
+    path.touch(mode=_SINK_FILE_MODE, exist_ok=True)
+    if stat.S_IMODE(path.stat().st_mode) != _SINK_FILE_MODE:
+        path.chmod(_SINK_FILE_MODE)
+
+
+def _rotate_if_full(path: Path) -> None:
+    """Roll the sink over once it reaches its configured ceiling.
+
+    Rotation is what turns an append-only demo file into something with
+    a retention policy: the live sink stays small enough to read, and
+    the oldest page ages out instead of accumulating employee questions
+    forever. It is deliberately hand-written rather than delegated to
+    ``logging.handlers``: the writer is not a ``logging`` handler, and
+    adding one would put a second, differently-configured sink beside
+    this one.
+
+    Args:
+        path: Live sink whose size decides whether a roll happens.
+
+    Raises:
+        OSError: If a rename or unlink fails; the caller reports it as a
+            failed write rather than losing the request.
+    """
+    if config.LOG_MAX_BYTES <= 0 or not path.exists():
+        return
+    if path.stat().st_size < config.LOG_MAX_BYTES:
+        return
+    if config.LOG_BACKUP_COUNT <= 0:
+        # Retention of zero pages: history is not kept at all, which is a
+        # valid choice for an operator who ships records elsewhere.
+        path.unlink()
+        return
+    _backup_path(path, config.LOG_BACKUP_COUNT).unlink(missing_ok=True)
+    for index in range(config.LOG_BACKUP_COUNT - 1, 0, -1):
+        page = _backup_path(path, index)
+        if page.exists():
+            page.rename(_backup_path(path, index + 1))
+    path.rename(_backup_path(path, 1))
+
+
+def _backup_path(path: Path, index: int) -> Path:
+    """Name the Nth rotated page of a sink.
+
+    Args:
+        path: The live sink.
+        index: Page number, 1 being the most recently rotated.
+
+    Returns:
+        The sink's path with ``.N`` appended, so the ``.jsonl`` suffix
+        stays visible in the name of every page.
+    """
+    return path.with_name(f"{path.name}.{index}")
 
 
 def _bounded_query(query: str) -> str:

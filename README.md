@@ -554,8 +554,17 @@ by name in those tests.
   shipped: that parsing is error-prone and its false rejections would cost more
   than the gap. The claim-span rule closes the same hole indirectly — a claim
   spelling a figure in words still has to quote a policy that supports it.
-* **No authentication, no RBAC, no per-document ACLs**, and full query text is
-  logged unredacted. `ENABLE_OPS_VIEW` is a demo flag, not authorization.
+* **No authentication, no RBAC, no per-document ACLs.** `ENABLE_OPS_VIEW` is a
+  demo flag, not authorization. The telemetry sink is created `0600` inside a
+  `0700` directory and rolls over at `LOG_MAX_BYTES` keeping `LOG_BACKUP_COUNT`
+  pages, and four identifier shapes — Thai national id, account number, phone,
+  email — are masked in the query text before it is written. That is a bounded
+  safeguard, not a PII classifier: a name, an address, a health detail in the
+  wording of a sick-leave question all still reach the file, and the amounts and
+  day counts a record exists to explain are deliberately left intact. An
+  identifier typed in Thai or fullwidth digits *is* masked — Python's `\d` is
+  Unicode-aware — but a Thai-digit phone number lands under the `[ACCT]` label
+  rather than `[TEL]`.
 * **Answer coverage is deliberately traded for support.** Requiring a verbatim
   policy span behind every claim means a reporter that paraphrases instead of
   copying loses the request to fallback, and an answer that repeats a figure from

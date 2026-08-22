@@ -274,6 +274,18 @@ FALLBACK_LOG_PATH: str = str(
     _PROJECT_ROOT / _env_str("FALLBACK_LOG_PATH", "logs/fallback_queries.jsonl")
 )
 
+# Retention bounds for that sink. It is append-only and holds employee
+# questions across sessions, so an unbounded file is both a disk risk and
+# a privacy one: the oldest page is the one nobody needs and everybody
+# can still read. Five megabytes is roughly 15k redacted records -- far
+# more history than a local demo or a support triage session reads --
+# and three pages keep about a month of a busy pilot. Neither number is
+# calibrated against an evaluation set; they are operational bounds, and
+# lowering them costs history rather than precision. LOG_MAX_BYTES=0
+# turns rotation off for an operator who ships the file elsewhere.
+LOG_MAX_BYTES: int = _env_int("LOG_MAX_BYTES", "5000000")
+LOG_BACKUP_COUNT: int = _env_int("LOG_BACKUP_COUNT", "3")
+
 # Demo-only switch for the persistent audit surface. The JSONL sink holds
 # raw employee questions across every session, so the default keeps it out
 # of the running app entirely; an operator turns it on deliberately for a
@@ -345,6 +357,10 @@ if SCOPE_AMBIGUOUS_MIN_SCORE >= SCOPE_MATCH_THRESHOLD:
         "the band would be empty and no query could ever be reported as "
         "under-specified"
     )
+if LOG_MAX_BYTES < 0:
+    raise ValueError("LOG_MAX_BYTES must not be negative")
+if LOG_BACKUP_COUNT < 0:
+    raise ValueError("LOG_BACKUP_COUNT must not be negative")
 if TOP_K <= 0:
     raise ValueError("TOP_K must be greater than zero")
 if MAX_QUERY_CHARS <= 0:

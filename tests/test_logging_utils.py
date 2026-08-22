@@ -9,7 +9,11 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import stat
+import subprocess
 import tempfile
+import threading
+import time
 import unittest
 import unittest.mock
 from datetime import datetime, timedelta, timezone
@@ -20,6 +24,7 @@ from src.logging_utils import (
     log_fallback_event,
     read_persistent_events,
     read_recent_events,
+    redact_query,
 )
 
 QUERY = "ขั้นตอนการเบิกค่าแท็กซี่หลังทำ OT ต้องทำอย่างไร"
@@ -212,6 +217,266 @@ class TestLogWrite(unittest.TestCase):
                 system_prompt="never",
                 log_path=self.log_path,
             )
+
+
+class TestQueryRedaction(unittest.TestCase):
+    """What the sink may keep of an employee's own words.
+
+    The file holds raw questions across every session, and a question
+    about sick leave or a reimbursement can carry an identity number, a
+    bank account, a phone number or an address. Redaction runs at the
+    writer because that is the single choke point into the sink
+    (AGENTS.md section 7, "Log privacy").
+    """
+
+    def test_a_thai_national_id_never_reaches_the_record(self) -> None:
+        redacted = redact_query("เลขบัตร 1234567890123 ใช้เบิกได้ไหม")
+
+        self.assertNotIn("1234567890123", redacted)
+        self.assertIn("[ID]", redacted)
+
+    def test_a_bank_account_number_is_replaced(self) -> None:
+        redacted = redact_query("โอนเข้าบัญชี 1234567890 ได้ไหม")
+
+        self.assertNotIn("1234567890", redacted)
+        self.assertIn("[ACCT]", redacted)
+
+    def test_a_mobile_number_is_replaced(self) -> None:
+        redacted = redact_query("ติดต่อกลับที่ 0812345678 ได้ไหม")
+
+        self.assertNotIn("0812345678", redacted)
+        self.assertIn("[TEL]", redacted)
+
+    def test_an_email_address_is_replaced(self) -> None:
+        redacted = redact_query("ส่งใบเสร็จไปที่ somchai.k@example.co.th")
+
+        self.assertNotIn("somchai.k@example.co.th", redacted)
+        self.assertIn("[EMAIL]", redacted)
+
+    def test_an_identifier_in_thai_digits_is_masked_too(self) -> None:
+        # Python's \d is Unicode-aware, so the length rules cover an id
+        # typed in Thai or fullwidth digits without the text being folded
+        # first -- folding would store a question nobody asked.
+        for digits in ("๑๒๓๔๕๖๗๘๙๐๑๒๓", "１２３４５６７８９０１２３"):
+            with self.subTest(digits=digits):
+                self.assertEqual(
+                    redact_query(f"เลขบัตร {digits} ใช้เบิกได้ไหม"),
+                    "เลขบัตร [ID] ใช้เบิกได้ไหม",
+                )
+
+    def test_a_thai_digit_phone_number_is_masked_as_an_account(
+        self,
+    ) -> None:
+        # The phone rule anchors on a literal ASCII zero, so this one
+        # falls to the account rule: the wrong label, but not in the
+        # clear. Asserted rather than left to be discovered.
+        self.assertEqual(
+            redact_query("ติดต่อกลับที่ ๐๘๑๒๓๔๕๖๗๘ ได้ไหม"),
+            "ติดต่อกลับที่ [ACCT] ได้ไหม",
+        )
+
+    def test_amounts_in_thai_digits_are_left_alone(self) -> None:
+        self.assertEqual(
+            redact_query("เบิก ๕๐๐ บาท ลา ๑๐ วัน"), "เบิก ๕๐๐ บาท ลา ๑๐ วัน"
+        )
+
+    def test_an_ordinary_question_is_left_alone(self) -> None:
+        # Over-redaction has a cost of its own: the sink exists to debug
+        # retrieval, and a record whose amounts and deadlines have been
+        # masked cannot do that. Amounts, day counts and document ids
+        # are the whole subject of these questions.
+        for query in (
+            "เบิกค่าแท็กซี่ 500 บาท ต้องใช้ใบเสร็จไหม",
+            "ลาพักร้อนได้กี่วันต่อปี ต้องแจ้งล่วงหน้า 3 วันไหม",
+            "ยื่นเบิกภายใน 30 วันตามเอกสาร FIN-001 ใช่ไหม",
+            "How many annual leave days do I get?",
+        ):
+            with self.subTest(query=query):
+                self.assertEqual(redact_query(query), query)
+
+    def test_redaction_keeps_the_surrounding_question_readable(self) -> None:
+        redacted = redact_query("เบอร์ 0812345678 เบิกค่าแท็กซี่ 500 บาท")
+
+        self.assertIn("เบิกค่าแท็กซี่ 500 บาท", redacted)
+
+    def test_the_written_record_carries_the_redacted_query(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        log_path = Path(tmp.name) / "fallback_queries.jsonl"
+
+        log_fallback_event(
+            query="เลขบัตร 1234567890123 อีเมล somchai@example.com",
+            reason=REASON,
+            raw_retrieval_score=None,
+            expanded_retrieval_score=None,
+            top_sources=[],
+            rewritten_queries=["เลขบัตร 1234567890123 ขอเบิก"],
+            log_path=log_path,
+            now=_fixed_clock,
+        )
+
+        written = log_path.read_text(encoding="utf-8")
+        self.assertNotIn("1234567890123", written)
+        self.assertNotIn("somchai@example.com", written)
+        # A rewrite is the same question in the model's words, so it can
+        # carry the same identifiers the employee typed.
+        self.assertIn("[ID]", json.loads(written)["rewritten_queries"][0])
+
+    def test_redaction_stays_bounded_on_adversarial_input(self) -> None:
+        # Same ReDoS discipline as the guardrail: bounded quantifiers,
+        # asserted against input built to make a greedy pattern backtrack
+        # (AGENTS.md section 7).
+        hostile = ("9" * 5_000 + "@" + "a." * 2_000) * 5
+
+        started = time.perf_counter()
+        redact_query(hostile)
+
+        self.assertLess(time.perf_counter() - started, 1.0)
+
+
+class TestSinkPermissions(unittest.TestCase):
+    """The sink is private to the user the process runs as."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.directory = Path(tmp.name) / "logs"
+        self.log_path = self.directory / "fallback_queries.jsonl"
+
+    def _append(self) -> None:
+        log_fallback_event(
+            query=QUERY,
+            reason=REASON,
+            raw_retrieval_score=None,
+            expanded_retrieval_score=None,
+            top_sources=[],
+            rewritten_queries=[],
+            log_path=self.log_path,
+            now=_fixed_clock,
+        )
+
+    def _mode(self, path: Path) -> int:
+        return stat.S_IMODE(path.stat().st_mode)
+
+    def test_a_new_sink_is_readable_only_by_its_owner(self) -> None:
+        self._append()
+
+        self.assertEqual(self._mode(self.log_path), 0o600)
+
+    def test_a_new_log_directory_is_private_too(self) -> None:
+        self._append()
+
+        self.assertEqual(self._mode(self.directory), 0o700)
+
+    def test_a_world_readable_sink_is_narrowed_on_the_next_write(
+        self,
+    ) -> None:
+        # The committed default used to be 0644, so an existing sink has
+        # to be corrected rather than only new ones created correctly.
+        self.directory.mkdir(parents=True)
+        self.log_path.touch(mode=0o644)
+
+        self._append()
+
+        self.assertEqual(self._mode(self.log_path), 0o600)
+
+
+class TestSinkRotation(unittest.TestCase):
+    """Retention: an append-only file with no ceiling is not a policy."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.log_path = Path(tmp.name) / "fallback_queries.jsonl"
+        self._configure(max_bytes=400, backups=2)
+
+    def _configure(self, *, max_bytes: int, backups: int) -> None:
+        for name, value in (
+            ("LOG_MAX_BYTES", max_bytes),
+            ("LOG_BACKUP_COUNT", backups),
+        ):
+            patch = unittest.mock.patch.object(config, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def _append(self, query: str = QUERY) -> None:
+        log_fallback_event(
+            query=query,
+            reason=REASON,
+            raw_retrieval_score=None,
+            expanded_retrieval_score=None,
+            top_sources=[],
+            rewritten_queries=[],
+            log_path=self.log_path,
+            now=_fixed_clock,
+        )
+
+    def _backup(self, index: int) -> Path:
+        return self.log_path.with_name(f"{self.log_path.name}.{index}")
+
+    def test_a_full_sink_rolls_over_before_the_next_record(self) -> None:
+        for _ in range(4):
+            self._append()
+
+        self.assertTrue(self._backup(1).exists())
+        self.assertGreaterEqual(self._backup(1).stat().st_size, 400)
+
+    def test_the_newest_record_lands_in_the_live_sink(self) -> None:
+        for _ in range(4):
+            self._append()
+        self._append(query="คำถามล่าสุด")
+
+        self.assertIn(
+            "คำถามล่าสุด", self.log_path.read_text(encoding="utf-8")
+        )
+
+    def test_retention_drops_the_oldest_page(self) -> None:
+        for index in range(24):
+            self._append(query=f"{QUERY} {index}")
+
+        self.assertTrue(self._backup(2).exists())
+        self.assertFalse(self._backup(3).exists())
+
+    def test_a_rotated_sink_stays_private(self) -> None:
+        for _ in range(4):
+            self._append()
+
+        self.assertEqual(
+            stat.S_IMODE(self._backup(1).stat().st_mode), 0o600
+        )
+
+    def test_rotation_is_off_when_no_ceiling_is_configured(self) -> None:
+        self._configure(max_bytes=0, backups=2)
+
+        for _ in range(6):
+            self._append()
+
+        self.assertFalse(self._backup(1).exists())
+
+    def test_every_record_survives_two_concurrent_writers(self) -> None:
+        # One record is one write of well under a page, so O_APPEND keeps
+        # the lines whole; the assertion is that they all still decode.
+        self._configure(max_bytes=0, backups=0)
+        barrier = threading.Barrier(2)
+
+        def writer(tag: str) -> None:
+            barrier.wait()
+            for index in range(20):
+                self._append(query=f"{tag}-{index}")
+
+        threads = [
+            threading.Thread(target=writer, args=(tag,))
+            for tag in ("a", "b")
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        lines = self.log_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 40)
+        for line in lines:
+            json.loads(line)
 
 
 class TestBoundedLogRead(unittest.TestCase):
@@ -408,6 +673,22 @@ class TestRepositoryHygiene(unittest.TestCase):
 
         self.assertIn(".env", ignore_rules)
         self.assertIn("logs/*.jsonl", ignore_rules)
+
+    def test_rotated_pages_are_git_ignored_too(self) -> None:
+        # Rotation renames the sink to "....jsonl.1", which the original
+        # "logs/*.jsonl" rule does not match -- so adding rotation would
+        # otherwise have made a page of real employee questions
+        # committable.
+        root = Path(__file__).resolve().parents[1]
+        page = root / "logs" / "fallback_queries.jsonl.1"
+
+        ignored = subprocess.run(
+            ["git", "check-ignore", "--quiet", str(page)],
+            cwd=root,
+            check=False,
+        )
+
+        self.assertEqual(ignored.returncode, 0)
 
 
 if __name__ == "__main__":
