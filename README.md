@@ -570,10 +570,13 @@ by name in those tests.
   `COVERED_EXPENSE_ITEMS` is likewise a list drawn from `FIN-001`: it has to be
   edited when a policy grants a new item, and an eligibility question that also
   resolves the receipt topic skips that gate entirely.
-* **The regex guardrail is precision-first and finite.** Novel attack phrasings
-  will pass it, and indirect prompt injection through document content is
-  contained by the claim-span rule rather than prevented — the layers, and what
-  each one cannot do, are in [section 6](#indirect-injection-what-each-layer-actually-catches).
+* **The regex guardrail is a prototype safeguard, not defence-in-depth.** It is
+  a finite, precision-first pattern catalog: novel attack phrasings will pass
+  it, the block rates below are reported with their case count and are not a
+  claim about attacks outside that set, and indirect prompt injection through
+  document content is contained by the claim-span rule rather than prevented —
+  the layers, and what each one cannot do, are in
+  [section 6](#indirect-injection-what-each-layer-actually-catches).
   The leetspeak folding resolves confusable digits only inside a token that mixes
   letters with them, so a homoglyph attack written entirely in Unicode
   lookalike *letters* (Cyrillic `о` for Latin `o`) is still out of its reach.
