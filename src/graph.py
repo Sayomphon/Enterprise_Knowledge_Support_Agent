@@ -407,7 +407,24 @@ def build_graph(
         that is already fast.
         """
         started_at = time.monotonic()
-        result = screen_query(state["query"])
+        try:
+            result = screen_query(state["query"])
+        except Exception as exc:
+            # Every other stage degrades behind a node that already ran;
+            # this one is first, so it carries its own handler. It fails
+            # CLOSED: an unscreened query must reach neither the index
+            # nor a provider, so the request degrades here and the nodes
+            # behind it stand down. Only a string is carried into the
+            # record -- the raw value may be any object, and the sink's
+            # schema types that field as text.
+            raw_query = state["query"]
+            return {
+                "query": raw_query if isinstance(raw_query, str) else "",
+                "request_started_at": started_at,
+                **_degraded(
+                    "input_guardrail_node", exc, ReasonCode.EVIDENCE_FAILURE
+                ),
+            }
         if not result.ok:
             # The normalized form travels on the blocked branch too. It is
             # what the refusal node logs, so the sink records stripped text
@@ -443,6 +460,13 @@ def build_graph(
 
     def retrieve_original_node(state: PipelineState) -> dict[str, object]:
         """Retrieve with the original query and record the top-1 score."""
+        if state.get("fallback_reason"):
+            # The screen ahead of this node failed closed, so the query
+            # was never normalized and must not be searched. The empty
+            # candidate list and zero score are not a verdict; they exist
+            # so the scope router has the keys it reads before it sends
+            # the request on to fallback.
+            return {"retrieved_candidates": [], "raw_retrieval_score": 0.0}
         try:
             results = retriever.search([state["query"]], config.TOP_K)
         except Exception as exc:
@@ -738,20 +762,29 @@ def build_graph(
         evidence_ids = {
             document.source_id for document in state["answer_evidence"]
         }
-        result = validate_answer(
-            candidate,
-            evidence_ids,
-            state.get("authoritative_source_ids", []),
-            # The bodies travel with the ids because provenance alone
-            # cannot see a wrong figure under a right citation. The
-            # original query goes with them so a number the employee
-            # wrote themselves is not treated as invented.
-            evidence_texts={
-                document.source_id: document.content
-                for document in state["answer_evidence"]
-            },
-            query=state["query"],
-        )
+        try:
+            result = validate_answer(
+                candidate,
+                evidence_ids,
+                state.get("authoritative_source_ids", []),
+                # The bodies travel with the ids because provenance alone
+                # cannot see a wrong figure under a right citation. The
+                # original query goes with them so a number the employee
+                # wrote themselves is not treated as invented.
+                evidence_texts={
+                    document.source_id: document.content
+                    for document in state["answer_evidence"]
+                },
+                query=state["query"],
+            )
+        except Exception as exc:
+            # A validator that crashed validated nothing, so the
+            # candidate stays a candidate: this node is the only writer
+            # of the public ``answer``, and degrading here is what keeps
+            # unchecked model text off the employee's screen.
+            return _degraded(
+                "validate_citations_node", exc, ReasonCode.EVIDENCE_FAILURE
+            )
         if result.ok:
             return {
                 "route": "answered",

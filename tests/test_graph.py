@@ -1662,6 +1662,82 @@ class TestDeterministicStageFailures(unittest.TestCase):
                     ReasonCode.EVIDENCE_FAILURE.value,
                 )
 
+    def test_guardrail_stage_failure_degrades_instead_of_escaping(
+        self,
+    ) -> None:
+        # The screen is the one stage with no node ahead of it, so a
+        # crash there used to escape ``invoke`` with no reason code at
+        # all (AGENTS.md section 4, invariant 9).
+        graph = build_graph(
+            retriever=StubRetriever([_documents(HIGH_SCORE)]),
+            log_path=self.log_path,
+            documents=_corpus(),
+        )
+        with mock.patch(
+            "src.graph.screen_query",
+            side_effect=RuntimeError("guardrail catalog corrupted"),
+        ):
+            state = graph.invoke({"query": NORMAL_QUERY})
+
+        self.assertEqual(state["route"], "fallback")
+        self.assertEqual(
+            state["fallback_reason"], ReasonCode.EVIDENCE_FAILURE.value
+        )
+        self.assertEqual(
+            self._log_records()[-1]["reason"],
+            ReasonCode.EVIDENCE_FAILURE.value,
+        )
+
+    def test_a_failed_screen_never_lets_the_query_reach_retrieval(
+        self,
+    ) -> None:
+        # Failing closed is the whole point: an unscreened query must not
+        # be searched, rewritten or answered, so the stage behind the
+        # screen is never asked anything.
+        retriever = StubRetriever([_documents(HIGH_SCORE)])
+        graph = build_graph(
+            retriever=retriever,
+            log_path=self.log_path,
+            documents=_corpus(),
+        )
+        with mock.patch(
+            "src.graph.screen_query",
+            side_effect=RuntimeError("guardrail catalog corrupted"),
+        ):
+            state = graph.invoke({"query": INJECTION_QUERY})
+
+        self.assertEqual(retriever.calls, [])
+        self.assertNotIn("answer", state)
+
+    def test_validator_failure_degrades_instead_of_escaping(self) -> None:
+        # The validator is the last gate before the public answer, and
+        # it was the one deterministic seam with no handler: a crash
+        # there ended the request with an exception rather than a logged
+        # fallback.
+        graph = build_graph(
+            retriever=StubRetriever([_documents(HIGH_SCORE)]),
+            log_path=self.log_path,
+            documents=_corpus(),
+            reporter=lambda query, evidence, *, budget_seconds=None: (
+                VALID_CANDIDATE
+            ),
+        )
+        with mock.patch(
+            "src.graph.validate_answer",
+            side_effect=RuntimeError("validator index corrupted"),
+        ):
+            state = graph.invoke({"query": NORMAL_QUERY})
+
+        self.assertEqual(state["route"], "fallback")
+        self.assertEqual(
+            state["fallback_reason"], ReasonCode.EVIDENCE_FAILURE.value
+        )
+        self.assertNotIn("answer", state)
+        self.assertEqual(
+            self._log_records()[-1]["reason"],
+            ReasonCode.EVIDENCE_FAILURE.value,
+        )
+
     def test_non_string_query_is_refused_rather_than_raising(self) -> None:
         # screen_query is typed ``query: object`` so this boundary can
         # reject a non-string; the refusal path then has to survive it.

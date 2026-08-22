@@ -11,12 +11,14 @@ re-implements routing, thresholds, or validation.
 
 from __future__ import annotations
 
+import sys
 import time
 from datetime import datetime
 
 import streamlit as st
 from langgraph.graph.state import CompiledStateGraph
 
+from src.fallback import ReasonCode
 from src.graph import build_graph
 from src.ingestion.loader import load_documents
 from src.retrievers.local_tfidf import LocalTfidfRetriever
@@ -57,11 +59,50 @@ def _graph_and_retriever() -> tuple[
 
 
 def _invoke_graph(query: str) -> tuple[PipelineState, float]:
-    """Run one query through the real pipeline, measuring wall latency."""
+    """Run one query through the real pipeline, measuring wall latency.
+
+    Every node inside the graph degrades to a logged fallback on its own,
+    so a failure that escapes ``invoke`` is a fault in the runtime around
+    them -- and on a Streamlit page an escaping exception is rendered as
+    a traceback that may carry a filesystem path, a prompt fragment or a
+    provider payload (AGENTS.md section 4, invariant 10). This seam
+    absorbs it into the service-state the presentation layer already
+    knows how to draw. Only the exception type reaches stderr, and no
+    telemetry is written here: logging is the graph's job, and the UI
+    layer holds no business logic (AGENTS.md section 3).
+    """
     graph, _, _ = _graph_and_retriever()
     started = time.perf_counter()
-    state: PipelineState = graph.invoke({"query": query})
+    try:
+        state: PipelineState = graph.invoke({"query": query})
+    except Exception as exc:
+        print(
+            f"ui.runtime: request degraded after {type(exc).__name__}",
+            file=sys.stderr,
+        )
+        state = _unhandled_failure_state(query)
     return state, time.perf_counter() - started
+
+
+def _unhandled_failure_state(query: str) -> PipelineState:
+    """Build the state of a request the pipeline could not finish.
+
+    Args:
+        query: The employee's question, kept so the console can show
+            which request degraded.
+
+    Returns:
+        A fallback state carrying the stage-failure reason code. The
+        telemetry flag is False because nothing was written: the graph
+        never reached its own logging node, and claiming a recorded
+        question the sink never saw is the dishonesty Finding 7 removed.
+    """
+    return {
+        "query": query,
+        "route": "fallback",
+        "fallback_reason": ReasonCode.EVIDENCE_FAILURE.value,
+        "telemetry_logged": False,
+    }
 
 
 def _record_request(query: str, state: PipelineState, latency: float) -> None:
