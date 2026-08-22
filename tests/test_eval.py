@@ -25,6 +25,7 @@ from eval.run_eval import (
     _exit_code,
     _candidate_answer,
     _promoted_answer,
+    _validated_citation_cases,
     _ratio,
     build_eval_graph,
     evaluate_contracts,
@@ -175,7 +176,12 @@ class TestPromoteRule(unittest.TestCase):
     """
 
     def _case(self, source_ids: list[str]) -> dict:
-        """Build one citation fixture citing the given ids."""
+        """Build one citation fixture citing the given ids.
+
+        The document body states the figure the claim quotes: the answer
+        contract checks the two against each other, and a placeholder
+        body would reject the valid candidate for the wrong reason.
+        """
         return {
             "claims": [
                 {"text": "ลาพักร้อนได้ 10 วัน", "source_ids": source_ids}
@@ -183,6 +189,7 @@ class TestPromoteRule(unittest.TestCase):
             "insufficient_evidence": False,
             "evidence_ids": ["HR-001"],
             "authoritative_ids": ["HR-001"],
+            "evidence_texts": {"HR-001": "ลาพักร้อนได้ 10 วันต่อปี"},
         }
 
     def test_validated_candidate_renders_public_text(self) -> None:
@@ -537,6 +544,82 @@ class TestContractSet(unittest.TestCase):
 
         self.assertEqual(failures, 0)
         self.assertEqual(buffer.getvalue(), "")
+
+
+class TestCitationCaseFixture(unittest.TestCase):
+    """The citation set is refused when a record cannot be scored.
+
+    Two of its fields point at ids -- the authority subset and the
+    document bodies the numeric rule reads -- and a body filed under an
+    id the case never cites would be scored against nothing while
+    looking deliberate in the file.
+    """
+
+    @staticmethod
+    def _raw_citation_case(**overrides: object) -> dict:
+        case = {
+            "id": "cit_01",
+            "claims": [{"text": "ลาพักร้อนได้ 10 วัน", "source_ids": ["HR-001"]}],
+            "insufficient_evidence": False,
+            "evidence_ids": ["HR-001"],
+            "authoritative_ids": ["HR-001"],
+            "expected_valid": True,
+        }
+        case.update(overrides)
+        return case
+
+    def test_valid_case_is_accepted(self) -> None:
+        cases = _validated_citation_cases([self._raw_citation_case()])
+
+        self.assertEqual(cases[0]["id"], "cit_01")
+
+    def test_duplicate_id_is_rejected(self) -> None:
+        with self.assertRaises(EvalFixtureError):
+            _validated_citation_cases(
+                [self._raw_citation_case(), self._raw_citation_case()]
+            )
+
+    def test_missing_field_is_rejected(self) -> None:
+        case = self._raw_citation_case()
+        del case["authoritative_ids"]
+
+        with self.assertRaises(EvalFixtureError):
+            _validated_citation_cases([case])
+
+    def test_authority_outside_the_evidence_is_rejected(self) -> None:
+        with self.assertRaises(EvalFixtureError):
+            _validated_citation_cases(
+                [self._raw_citation_case(authoritative_ids=["ZZ-999"])]
+            )
+
+    def test_evidence_body_for_an_uncited_id_is_rejected(self) -> None:
+        with self.assertRaises(EvalFixtureError):
+            _validated_citation_cases(
+                [
+                    self._raw_citation_case(
+                        evidence_texts={"ZZ-999": "ลาพักร้อนได้ 10 วัน"}
+                    )
+                ]
+            )
+
+    def test_rejection_case_without_a_reason_is_rejected(self) -> None:
+        # Scored against ``None`` such a case can only pass by accident.
+        with self.assertRaises(EvalFixtureError):
+            _validated_citation_cases(
+                [self._raw_citation_case(expected_valid=False)]
+            )
+
+    def test_the_shipped_set_covers_the_numeric_rule(self) -> None:
+        from eval.run_eval import _load_json
+
+        cases = _validated_citation_cases(_load_json("citation_cases.json"))
+        reasons = {
+            case.get("expected_reason")
+            for case in cases
+            if not case["expected_valid"]
+        }
+
+        self.assertIn("unsupported_numeric_claim", reasons)
 
 
 class TestAnswerCaseFixture(unittest.TestCase):

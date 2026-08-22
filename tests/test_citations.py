@@ -15,6 +15,21 @@ from src.schemas import AnswerClaim, GroundedAnswer
 EVIDENCE_IDS = {"FIN-001", "FIN-002", "CHAT-001"}
 AUTHORITATIVE_IDS = {"FIN-001", "FIN-002"}
 
+# Bodies of the documents behind those ids. The numeric rule reads the
+# document text rather than trusting the claim, so the figures a valid
+# claim may state have to exist here first.
+EVIDENCE_TEXTS = {
+    "FIN-001": (
+        "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วันนับจากวันที่จ่าย "
+        "ค่าแท็กซี่หลังเวลา 22:00 น. เบิกได้ตามจริง"
+    ),
+    "FIN-002": (
+        "กรณีใบเสร็จหาย ใช้แบบฟอร์มรับรองแทนได้ในวงเงินไม่เกิน 500 บาท "
+        "วงเงินโครงการรวมไม่เกิน 5,000 บาทต่อปี"
+    ),
+    "CHAT-001": "เพื่อนร่วมงานบอกว่าเบิกย้อนหลังได้ 60 วัน",
+}
+
 CLAIM_TEXT = "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
 SECOND_CLAIM_TEXT = "ต้องแนบใบเสร็จหรือเอกสารประกอบตามนโยบาย"
 CHAT_CLAIM_TEXT = "เพื่อนร่วมงานบอกว่าเบิกย้อนหลังได้ 60 วัน"
@@ -42,9 +57,22 @@ def _answer(*claims: AnswerClaim, insufficient: bool = False) -> GroundedAnswer:
     )
 
 
-def _validate(candidate: GroundedAnswer):
-    """Validate a candidate against the shared evidence of these tests."""
-    return validate_answer(candidate, EVIDENCE_IDS, AUTHORITATIVE_IDS)
+def _validate(candidate: GroundedAnswer, query: str = ""):
+    """Validate a candidate against the shared evidence of these tests.
+
+    Args:
+        candidate: The candidate answer under test.
+        query: The employee's question, for the cases that check a
+            figure the employee supplied themselves. Most cases ask
+            nothing numeric, so the default is the empty question.
+    """
+    return validate_answer(
+        candidate,
+        EVIDENCE_IDS,
+        AUTHORITATIVE_IDS,
+        evidence_texts=EVIDENCE_TEXTS,
+        query=query,
+    )
 
 
 class TestValidAnswers(unittest.TestCase):
@@ -62,11 +90,13 @@ class TestValidAnswers(unittest.TestCase):
     def test_citations_are_sorted_and_deduplicated_across_claims(
         self,
     ) -> None:
+        # The claim that names a figure cites the document that states
+        # it; this case is about the citation set, not the numeric rule.
         result = _validate(
             _answer(
-                AnswerClaim(text=CLAIM_TEXT, source_ids=["FIN-002"]),
+                AnswerClaim(text=SECOND_CLAIM_TEXT, source_ids=["FIN-002"]),
                 AnswerClaim(
-                    text=SECOND_CLAIM_TEXT,
+                    text=CLAIM_TEXT,
                     source_ids=["FIN-002", "FIN-001"],
                 ),
             )
@@ -283,6 +313,132 @@ class TestStructureRejection(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "invalid_answer_structure")
+
+
+class TestNumericAnchorRule(unittest.TestCase):
+    """A right citation under a wrong figure is still a wrong answer.
+
+    Provenance and coverage both pass on "ลาได้ 15 วัน" citing the policy
+    that says 10, which is the cheapest hallucination to produce and the
+    most expensive one to act on in an HR/Finance answer.
+    """
+
+    def test_figure_absent_from_the_cited_document_is_rejected(
+        self,
+    ) -> None:
+        result = _validate(
+            _answer(
+                AnswerClaim(
+                    text="ยื่นเบิกผ่าน Expense Portal ภายใน 45 วัน",
+                    source_ids=["FIN-001"],
+                )
+            )
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "unsupported_numeric_claim")
+
+    def test_figure_present_in_the_cited_document_passes(self) -> None:
+        result = _validate(
+            _answer(AnswerClaim(text=CLAIM_TEXT, source_ids=["FIN-001"]))
+        )
+
+        self.assertTrue(result.ok)
+
+    def test_clock_time_is_checked_as_one_anchor(self) -> None:
+        supported = _validate(
+            _answer(
+                AnswerClaim(
+                    text="เบิกค่าแท็กซี่ได้เมื่อทำงานหลังเวลา 22:00 น.",
+                    source_ids=["FIN-001"],
+                )
+            )
+        )
+        invented = _validate(
+            _answer(
+                AnswerClaim(
+                    text="เบิกค่าแท็กซี่ได้เมื่อทำงานหลังเวลา 21:00 น.",
+                    source_ids=["FIN-001"],
+                )
+            )
+        )
+
+        self.assertTrue(supported.ok)
+        self.assertFalse(invented.ok)
+        self.assertEqual(invented.reason, "unsupported_numeric_claim")
+
+    def test_a_figure_the_employee_wrote_may_be_repeated_back(
+        self,
+    ) -> None:
+        # Without this exemption the assistant could not answer "ลา 2
+        # วันได้ไหม" by naming the two days the employee asked about.
+        result = _validate(
+            _answer(
+                AnswerClaim(
+                    text="การลา 2 วันต้องยื่นผ่านระบบตามขั้นตอนปกติ",
+                    source_ids=["FIN-001"],
+                )
+            ),
+            query="ลา 2 วันต้องทำอย่างไร",
+        )
+
+        self.assertTrue(result.ok)
+
+    def test_thousand_separators_do_not_change_a_figure(self) -> None:
+        # The evidence writes 5,000 and the claim writes 5000; they are
+        # the same amount and the anchors normalize to the same string.
+        result = _validate(
+            _answer(
+                AnswerClaim(
+                    text="วงเงินโครงการรวมไม่เกิน 5000 บาทต่อปี",
+                    source_ids=["FIN-002"],
+                )
+            )
+        )
+
+        self.assertTrue(result.ok)
+
+    def test_figure_from_an_uncited_document_is_still_rejected(
+        self,
+    ) -> None:
+        # The 500-baht limit is in FIN-002, which this claim does not
+        # cite. Pooling every document's anchors would let a claim borrow
+        # a figure from a source it never named.
+        result = _validate(
+            _answer(
+                AnswerClaim(
+                    text="ใบเสร็จหายรับรองแทนได้ไม่เกิน 500 บาท",
+                    source_ids=["FIN-001"],
+                )
+            )
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "unsupported_numeric_claim")
+
+    def test_a_claim_without_figures_is_unaffected(self) -> None:
+        result = _validate(
+            _answer(
+                AnswerClaim(text=SECOND_CLAIM_TEXT, source_ids=["FIN-001"])
+            )
+        )
+
+        self.assertTrue(result.ok)
+
+    def test_provenance_rules_are_still_reported_first(self) -> None:
+        # A fabricated id AND an invented figure: the answer must be
+        # rejected for the id, because that is the stronger statement
+        # about what went wrong and the reason an operator acts on.
+        result = _validate(
+            _answer(
+                AnswerClaim(
+                    text="ยื่นเบิกภายใน 45 วัน", source_ids=["ZZ-999"]
+                )
+            )
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "fabricated_citation")
 
 
 if __name__ == "__main__":

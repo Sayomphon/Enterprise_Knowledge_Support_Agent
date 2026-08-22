@@ -236,6 +236,10 @@ class TestAuthorityRules(unittest.TestCase):
                 for document in selection.answer_evidence
             },
             selection.authoritative_ids,
+            evidence_texts={
+                document.source_id: document.content
+                for document in selection.answer_evidence
+            },
         )
 
         self.assertFalse(result.ok)

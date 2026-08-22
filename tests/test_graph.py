@@ -80,6 +80,11 @@ REWRITTEN_VARIANT = "เบิกเงินค่าแท็กซี่"
 DRIFTED_VARIANT = "วิธีลาพักร้อนต้องแจ้งล่วงหน้ากี่วัน"
 
 CLAIM_TEXT = "ยื่นเบิกผ่าน Expense Portal ภายใน 30 วัน"
+# Body every stub document carries. It restates CLAIM_TEXT because the
+# answer contract checks the figures a claim states against the document
+# that claim cites: a one-character placeholder would fail every
+# valid-answer route on a rule these route tests are not about.
+EVIDENCE_TEXT = CLAIM_TEXT
 # Rendered form of VALID_CANDIDATE; the reporter no longer writes markup.
 VALID_ANSWER = f"{CLAIM_TEXT} [FIN-001]"
 VALID_CANDIDATE = GroundedAnswer(
@@ -112,7 +117,7 @@ def _policy(score: float) -> RetrievedDocument:
         source_id="FIN-001",
         title="Expense process",
         source_type="policy",
-        content="T",
+        content=EVIDENCE_TEXT,
         score=score,
         authority="authoritative",
         status="active",
@@ -126,7 +131,7 @@ def _chat(score: float) -> RetrievedDocument:
         source_id="CHAT-001",
         title="Expense chat",
         source_type="chat",
-        content="T",
+        content=EVIDENCE_TEXT,
         score=score,
         authority="supplementary",
         status="active",
@@ -141,7 +146,7 @@ def _off_topic_policy(score: float) -> RetrievedDocument:
         source_id="HR-002",
         title="Sick leave policy",
         source_type="policy",
-        content="T",
+        content=EVIDENCE_TEXT,
         score=score,
         authority="authoritative",
         status="active",
@@ -164,7 +169,7 @@ def _corpus(policy_status: str = "active") -> list[Document]:
             source_id="FIN-001",
             title="Expense process",
             source_type="policy",
-            content="T",
+            content=EVIDENCE_TEXT,
             authority="authoritative",
             status=policy_status,
             topics=("reimbursement_process",),
@@ -173,7 +178,7 @@ def _corpus(policy_status: str = "active") -> list[Document]:
             source_id="CHAT-001",
             title="Expense chat",
             source_type="chat",
-            content="T",
+            content=EVIDENCE_TEXT,
             authority="supplementary",
             status="active",
             topics=("reimbursement_process",),

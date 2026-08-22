@@ -29,9 +29,10 @@ class ReasonCode(enum.StrEnum):
           plan: an unsupported topic, a supported topic with no policy
           behind it, and a rewrite whose intent drifted away from the
           original question
-        - two for the answer contract, separating a structurally broken
-          candidate from a reporter that honestly reported its evidence
-          as insufficient
+        - three for the answer contract, separating a structurally
+          broken candidate from a reporter that honestly reported its
+          evidence as insufficient, and from one whose claim stated a
+          figure its own citations do not contain
         - one for an LLM route reached without configured credentials,
           which is a service state and must never be reported to the
           employee as thin evidence (remediation plan Finding 8)
@@ -54,6 +55,7 @@ class ReasonCode(enum.StrEnum):
     REWRITE_REJECTED = "rewrite_rejected"
     INVALID_ANSWER_STRUCTURE = "invalid_answer_structure"
     INSUFFICIENT_REPORTER_EVIDENCE = "insufficient_reporter_evidence"
+    UNSUPPORTED_NUMERIC_CLAIM = "unsupported_numeric_claim"
     LLM_NOT_CONFIGURED = "llm_not_configured"
 
 

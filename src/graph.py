@@ -567,6 +567,15 @@ def build_graph(
             candidate,
             evidence_ids,
             state.get("authoritative_source_ids", []),
+            # The bodies travel with the ids because provenance alone
+            # cannot see a wrong figure under a right citation. The
+            # original query goes with them so a number the employee
+            # wrote themselves is not treated as invented.
+            evidence_texts={
+                document.source_id: document.content
+                for document in state["answer_evidence"]
+            },
+            query=state["query"],
         )
         if result.ok:
             return {

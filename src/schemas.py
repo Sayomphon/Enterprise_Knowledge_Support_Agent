@@ -289,15 +289,17 @@ class ValidationResult:
 
     Attributes:
         ok: True when the candidate satisfies the answer contract: every
-            claim is non-empty, carries at least one source id, and cites
+            claim is non-empty, carries at least one source id, cites
             only this request's answer evidence with at least one policy
-            document behind it.
+            document behind it, and states no figure that is absent from
+            both its own citations and the employee's question.
         citations: Sorted, deduplicated ids cited across all claims when
             ``ok``.
         reason: Rejection reason code when not ``ok``, else ``None``.
             One of ``"missing_citation"``, ``"fabricated_citation"``,
-            ``"invalid_answer_structure"``, ``"insufficient_reporter_evidence"``
-            or ``"no_authoritative_evidence"``.
+            ``"invalid_answer_structure"``, ``"insufficient_reporter_evidence"``,
+            ``"no_authoritative_evidence"`` or
+            ``"unsupported_numeric_claim"``.
     """
 
     ok: bool

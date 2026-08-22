@@ -773,6 +773,79 @@ def evaluate_guardrail() -> int:
     return (len(attacks) - blocked) + (len(benign) - passed)
 
 
+def _validated_citation_cases(raw_cases: object) -> list[dict]:
+    """Reject a citation fixture the harness cannot score honestly.
+
+    The set gained per-case document bodies when the answer contract
+    started checking the figures a claim states, and a body filed under
+    an id the case does not cite would be scored against nothing while
+    looking deliberate in the file.
+
+    Args:
+        raw_cases: Decoded contents of ``citation_cases.json``.
+
+    Returns:
+        The validated records.
+
+    Raises:
+        EvalFixtureError: If a record is malformed, an id repeats, a
+            rejection case names no expected reason, or the authority
+            and evidence-body maps reference ids the case does not list
+            as evidence.
+    """
+    if not isinstance(raw_cases, list):
+        raise EvalFixtureError("citation_cases.json must hold a list")
+    seen_ids: set[str] = set()
+    for case in raw_cases:
+        if not isinstance(case, dict):
+            raise EvalFixtureError("citation case must be an object")
+        missing = {
+            "id",
+            "claims",
+            "evidence_ids",
+            "authoritative_ids",
+            "expected_valid",
+        } - set(case)
+        if missing:
+            raise EvalFixtureError(
+                f"citation case is missing {sorted(missing)}"
+            )
+        case_id = case["id"]
+        if case_id in seen_ids:
+            raise EvalFixtureError(f"duplicate case id {case_id!r}")
+        seen_ids.add(case_id)
+        evidence_ids = set(case["evidence_ids"])
+        unknown_authority = set(case["authoritative_ids"]) - evidence_ids
+        if unknown_authority:
+            raise EvalFixtureError(
+                f"{case_id}: authoritative ids {sorted(unknown_authority)} "
+                "are not in evidence_ids"
+            )
+        unknown_bodies = set(case.get("evidence_texts", {})) - evidence_ids
+        if unknown_bodies:
+            raise EvalFixtureError(
+                f"{case_id}: evidence_texts names {sorted(unknown_bodies)}, "
+                "which the case does not list as evidence"
+            )
+        if not case["expected_valid"] and not case.get("expected_reason"):
+            # Without it the comparison below scores the case against
+            # ``None`` and can only pass by accident.
+            raise EvalFixtureError(
+                f"{case_id}: a rejection case must name expected_reason"
+            )
+    return raw_cases
+
+
+def _citation_case_query(case: dict) -> str:
+    """Return the employee question one citation fixture answers.
+
+    Most cases describe a contract rather than a question, so they share
+    the probe query; a case about a figure the employee supplied
+    themselves carries its own.
+    """
+    return str(case.get("query", CITATION_PROBE_QUERY))
+
+
 def evaluate_citations(report: bool = True) -> int:
     """Score the answer-contract validator against its labelled cases.
 
@@ -790,7 +863,7 @@ def evaluate_citations(report: bool = True) -> int:
         because the labelled set deliberately mixes grounded and
         ungrounded claims -- it describes the fixture, not a defect.
     """
-    raw_cases = _load_json("citation_cases.json")
+    raw_cases = _validated_citation_cases(_load_json("citation_cases.json"))
     correct = 0
     grounded_claims = 0
     total_claims = 0
@@ -800,7 +873,17 @@ def evaluate_citations(report: bool = True) -> int:
         candidate = _candidate_answer(case)
         evidence_ids = set(case["evidence_ids"])
         result = validate_answer(
-            candidate, evidence_ids, set(case["authoritative_ids"])
+            candidate,
+            evidence_ids,
+            set(case["authoritative_ids"]),
+            # The bodies come from the same corpus builder the graph
+            # probe below uses, so the fixture cannot describe one set of
+            # documents to the validator and another to the pipeline.
+            evidence_texts={
+                document.source_id: document.content
+                for document in _citation_case_corpus(case)
+            },
+            query=_citation_case_query(case),
         )
         matches = result.ok == case["expected_valid"] and (
             case["expected_valid"]
@@ -869,7 +952,7 @@ def _promoted_answer(candidate: GroundedAnswer, case: dict) -> str:
         rewriter=lambda query: ([], None),
         reporter=lambda query, retrieved: candidate,
     )
-    state = graph.invoke({"query": CITATION_PROBE_QUERY})
+    state = graph.invoke({"query": _citation_case_query(case)})
     return str(state.get("answer", ""))
 
 
@@ -915,17 +998,22 @@ def _citation_case_corpus(case: dict) -> list[Document]:
     Returns:
         One document per id in ``evidence_ids``, carrying policy
         authority when the fixture lists it in ``authoritative_ids`` and
-        chat authority otherwise. Every document covers the probe topic,
-        so the scope and evidence gates admit them and the run reaches
-        the validation node under test.
+        chat authority otherwise. Bodies come from the case's optional
+        ``evidence_texts`` map, because the answer contract reads them:
+        a case about a figure has to say which document states it. The
+        placeholder body stands in for the cases that describe structure
+        or provenance and name no figure at all. Every document covers
+        the probe topic, so the scope and evidence gates admit them and
+        the run reaches the validation node under test.
     """
     authoritative = set(case["authoritative_ids"])
+    bodies = case.get("evidence_texts", {})
     return [
         Document(
             source_id=source_id,
             title=source_id,
             source_type="policy" if source_id in authoritative else "chat",
-            content=EVAL_CLAIM_TEXT,
+            content=str(bodies.get(source_id, EVAL_CLAIM_TEXT)),
             authority=(
                 "authoritative"
                 if source_id in authoritative
