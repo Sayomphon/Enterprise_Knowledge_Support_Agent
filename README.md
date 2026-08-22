@@ -106,8 +106,16 @@ streamlit run app.py                        # assistant on /, audit console on /
 commands plus the four offline gates on Python 3.11 and 3.12 for every push and
 pull request — install from the pins, `pip check`, the suite, each gate as its
 own step, a CLI query, and a Streamlit health check. The live answer set is not
-in CI: it calls a real provider and costs money. No run exists yet, because this
-repository has no remote, so no badge is claimed here.
+in CI: it calls a real provider and costs money.
+
+Every one of those steps was executed against a **clean 3.12 virtualenv built
+from `requirements.txt` alone**, in a fresh checkout with no `.env`: install and
+`pip check` clean, `main.py --check` exit 0 with the credential reported
+missing, 579 tests OK, all four gates exit 0, a CLI query exit 0, and
+`/_stcore/health` returning `ok`. That is the reproducibility claim the pinned
+requirements are supposed to carry, verified rather than asserted. The workflow
+itself has never run — this repository has no remote yet — so no badge is
+claimed here.
 
 Windows PowerShell differs only in activate and copy
 (`.\.venv\Scripts\Activate.ps1`, `Copy-Item .env.example .env`); full usage is

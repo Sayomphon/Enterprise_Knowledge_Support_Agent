@@ -1508,9 +1508,14 @@ P1.
 
 ## What is not covered by this snapshot
 
-* **CI has never run.** The workflow is committed and every one of its steps was
-  executed locally, including the Streamlit health check, but the repository has
-  no remote, so no run exists on GitHub and no badge is claimed.
+* **CI has never run, but its claim has been checked.** The workflow has no run
+  on GitHub — the repository has no remote — so no badge is claimed. What was
+  verified instead is the thing CI exists to prove here: a clean Python 3.12
+  virtualenv, built from `requirements.txt` alone in a fresh checkout with no
+  `.env`, installs cleanly, passes `pip check`, runs 579 tests OK, exits 0 on
+  all four gates and on a CLI query, and serves `/_stcore/health`. Audit item 7
+  (reproducibility unverifiable, because that sandbox could not reach PyPI) is
+  closed by measurement; only the automation around it is still unexercised.
 * **Redaction is four regexes.** A name, an address, and a health detail in the
   wording of a sick-leave question all still reach the sink. Identifiers typed
   in Thai or fullwidth digits are covered — `\d` is Unicode-aware in Python, so

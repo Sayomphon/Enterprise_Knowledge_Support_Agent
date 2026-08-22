@@ -77,7 +77,10 @@ jobs:
             --server.fileWatcherType none > /tmp/streamlit.log 2>&1 &
           curl --retry 30 --retry-delay 1 --retry-connrefused \
             --fail --silent http://localhost:8599/_stcore/health
-          pkill -f "streamlit run app.py"
+          # The health check is the assertion; tearing the server down is
+          # housekeeping, and a pkill that matches nothing exits 1, which
+          # would fail a step that has already proved what it tests.
+          pkill -f "streamlit run app.py" || true
 
       - name: Streamlit log
         if: always()
