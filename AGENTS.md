@@ -221,11 +221,15 @@ Violating any of these is a defect, even if tests pass.
 4. **Every factual claim carries validated `[SOURCE-ID]` citations**, and every
    cited ID must belong to the answer evidence selected for that request. The
    model does not write the markup: the renderer emits it from validated IDs.
-   Every number and clock time a claim states must also appear in a document
-   that claim cites or in the employee's question, because provenance alone
-   cannot see a wrong figure under a right citation. Missing, uncited,
-   fabricated, numerically unsupported, or structurally broken output routes to
-   fallback — never to `END`, and never into the public `answer`.
+   Every claim must also carry an `evidence_quote` that occurs verbatim, after
+   canonical folding, inside a **policy** document that claim cites, and every
+   number and clock time the claim states must appear inside that quote —
+   because provenance alone cannot see a wrong figure under a right citation,
+   nor a claim the cited document never makes. A figure that appears only in the
+   employee's question is deliberately not support: a question is not evidence
+   about what the corpus says. Missing, uncited, fabricated, unquoted,
+   numerically unsupported, or structurally broken output routes to fallback —
+   never to `END`, and never into the public `answer`.
 4b. **Policy is authoritative, chat is supplementary.** A normative answer needs
    at least one active policy document covering the query's topic; chat
    transcripts improve recall and may accompany a policy, but can never be the
@@ -234,7 +238,11 @@ Violating any of these is a defect, even if tests pass.
 4c. **Similarity is never the only answerability signal.** A query must resolve
    to a supported topic in the bounded catalog before any score can admit it to
    generation, so an in-domain question the corpus has no policy for falls back
-   instead of being answered from a lexically similar document.
+   instead of being answered from a lexically similar document. The same applies
+   one level finer: an eligibility question about an expense item no policy
+   grants is refused **before** the band router reads the score, because such a
+   question scores high precisely on the wording of the procedure policy that
+   grants nothing.
 5. **Thresholds come from calibration, never from intuition.** No magic numbers
    inline; they live in `config.py` / `.env` with a comment recording how they
    were derived.
@@ -408,16 +416,16 @@ from external calls.
 | Area | Rule |
 |---|---|
 | Secrets | Read only from environment via `config.py`, which exposes presence (`has_llm_credential()`), never the value. Never hardcode, never log, never echo in the UI, never write to `logs/`. Presence is checked lazily at the `src/agents` boundary; a missing key raises `MissingLlmCredentialError` and becomes the `llm_not_configured` reason code. |
-| Input validation | Reject non-string, empty, and over-length input (`MAX_QUERY_CHARS`) before any processing. The pipeline receives NFC-normalised text; the rules match a hardened folding (NFKC with Thai SARA AM recomposed, format characters removed, separator punctuation folded, case-folded) that never leaves the guardrail. |
+| Input validation | Reject non-string, empty, and over-length input (`MAX_QUERY_CHARS`) before any processing. The pipeline receives NFC-normalised text; the rules match hardened foldings (NFKC with Thai SARA AM recomposed, format characters removed, separator punctuation folded, case-folded, plus a leetspeak fold confined to tokens that mix letters with confusable digits) that never leave the guardrail. Folding confusables across a whole query is forbidden: it would rewrite every amount in an expense question. |
 | Prompt injection | Deterministic named-rule screen **before** the first LLM call, re-run on every model-generated rewrite candidate. Optimise for precision: block explicit override attempts, never block benign words such as `admin`, `act as`, `สมมติว่า`, `คำสั่งซื้อ`. Every rule needs both an attack test and a benign-lookalike test, paired by `rule_id`. |
 | ReDoS | Patterns use bounded quantifiers and no catastrophic nesting, and are screened against long adversarial input within a bounded time budget. |
 | Evidence isolation | Retrieved text is JSON-encoded into the human message and the system prompt declares those values untrusted data. Encoding contains delimiter breakout; it does not solve indirect prompt injection. |
-| Output validation | The reporter returns claims, not prose. Every claim is validated at runtime against the answer-evidence ID set and its policy subset — trust the validator, not the model. |
+| Output validation | The reporter returns claims, not prose. Every claim is validated at runtime against the answer-evidence ID set, its policy subset, and the body of the policy it quotes — trust the validator, not the model. Contract checks compare canonically folded text, so a figure or a citation spelled in another script is read as what it renders as. |
 | Path safety | The loader reads only from the configured corpus directory; resolve and verify paths, no traversal from user input. |
 | Logging hygiene | Log query text, reason code, scores, and top source IDs only. No API keys, no system prompts, no raw provider responses, no model metadata. |
 | Log privacy | The sink holds raw employee questions across sessions. It is never rendered in the employee view, and the console renders it only when `ENABLE_OPS_VIEW` is explicitly enabled. That flag is a demo switch, not authentication or RBAC, and must never be described as either. |
 | Dependencies | Pinned versions, direct dependencies only, installed from PyPI. |
-| Honesty | The README must state plainly that regex screening is a prototype safeguard, not defence-in-depth, and that claim-level validation proves provenance and coverage, not factual entailment. Block rates are reported with their case count, never as universal security. |
+| Honesty | The README must state plainly that regex screening is a prototype safeguard, not defence-in-depth, and that claim-level validation proves provenance, coverage and span presence — never factual entailment, since a span quoted out of its condition still passes. Block rates are reported with their case count, never as universal security. |
 
 ---
 
@@ -472,6 +480,7 @@ Reason codes (extend the enum, never invent ad-hoc strings):
 `unsupported_topic`, `ambiguous_topic`, `no_authoritative_evidence`,
 `rewrite_rejected`, `invalid_answer_structure`,
 `insufficient_reporter_evidence`, `unsupported_numeric_claim`,
+`unsupported_claim_span`, `uncovered_expense_item`,
 `llm_not_configured`, `request_deadline_exceeded`.
 
 `rewrite_failure` and `llm_not_configured` are what the fallback node records
@@ -522,12 +531,17 @@ not read at all, rather than read and then hidden.
 * Test names describe behaviour: `test_thai_injection_is_blocked_before_llm_call`.
 * Arrange–Act–Assert with one behavioural assertion focus per test.
 * Required critical-path coverage:
-  * loader: 8 documents load; duplicate `source_id` fails; missing title fails
+  * loader: 8 documents load; duplicate `source_id` fails; missing title fails;
+    an instruction-shaped line in a chat transcript is quarantined and the rest
+    of the transcript survives; the same line in a policy document fails the load
   * guardrail: English attack blocked, Thai attack blocked, `admin access` query passes, hypothetical-framing query passes
   * retrieval: exact query hits the expected document, typo query still hits it, out-of-domain scores below the answer threshold, top-k ordering is deterministic
   * rewriter: valid structured output, malformed provider response, timeout, failure falls back to original-query-only retrieval
   * reporter: structured output is returned unchanged, unparsed output raises, evidence is JSON-encoded, a document containing a closing delimiter cannot break its record, the document instruction never becomes a system message
-  * citations: valid claims pass, a claim without a source fails, fabricated ID fails, real-but-not-selected ID fails, chat-only claim fails, broken structure fails
+  * citations: valid claims pass, a claim without a source fails, fabricated ID
+    fails, real-but-not-selected ID fails, chat-only claim fails, broken structure
+    fails, a quote absent from every cited policy fails, a quote found only in a
+    chat document fails, and a figure outside the quote fails
   * graph: at least six routes — injection→refusal, low→fallback, high→answer, medium→alias-expansion→answer with the rewrite seam never constructed, medium→rewrite→answer, fabricated citation→fallback — plus the invalid-answer routes, which must leave no public `answer` in the final state
   * query expansion: variants are a pure function of query and resolved topics, no topic yields no variant, and a document ranked by a variant is labelled `alias` rather than `original`
   * logging: successful append returns `ok=True`, an unwritable path returns `ok=False` without raising, the failure line names the exception type but not the path or query, the bounded reader returns the newest N rows and counts a partial line without rendering it

@@ -292,3 +292,76 @@ degraded differently this time: the rewrite ran and returned inside its budget
 `rewrite_low_retrieval_score` rather than as a rewrite failure. Same route, a
 different reason code, and both are the pipeline reporting what actually
 happened.
+
+---
+
+# Re-measurement after the P0 claim-span contract (2026-08-22)
+
+P0-1 of `TASK1_REMEDIATION_PLAN.md` changed what the provider must return: every
+claim now carries an `evidence_quote` that has to occur verbatim in a **policy**
+document the claim cites, and a figure the employee wrote is no longer accepted
+as support. That is a change to the generation contract, so the whole set was
+re-run rather than reasoned about.
+
+```bash
+python eval/run_eval.py --set answers --live --runs 3 --yes \
+  --transcript eval/answer_transcript_p0.json
+```
+
+17 cases x 3 runs = 51 invocations on `gpt-5-mini`, same set, same anchors.
+
+| Metric | Before P0 | After P0 |
+|---|---:|---:|
+| Fact Recall | 0.912 (52/57) | **0.807 (46/57)** |
+| Fact-Citation Alignment | 1.000 (52/52) | **1.000 (46/46)** |
+| Alien Number Rate | 0.000 (0/51) | 0.000 (0/51) |
+| Forbidden Fact Rate | 0.000 (0/51) | 0.000 (0/51) |
+| Correct Refusal Rate | 1.000 (3/3) | 1.000 (3/3) |
+| Route Stability | 0.941 (16/17) | **0.882 (15/17)** |
+| Latency p50 / p95 | 6.6s / 27.7s | **10.9s / 29.9s** |
+
+## Where the six lost facts actually went
+
+Fact Recall fell by six fact-instances. Attributing them to "the span rule"
+would be the convenient reading and it is wrong: the two transcripts were
+compared run by run, and exactly three cases changed route.
+
+| Case | Before | After | Reason | Fact-instances lost | Caused by P0? |
+|---|---|---|---|---:|---|
+| `ans_multi_01` | answered x3 | fallback, fallback, answered | `rewrite_low_retrieval_score` (20.5s), `rewrite_failure` (20.5s) | 4 | **No** — the rewrite exceeded its 10s budget, the documented medium-band instability |
+| `ans_chat_01` | answered x3 | answered, fallback, answered | `unsupported_claim_span` (22.2s) | 1 | **Yes** — this is the new contract refusing a claim whose quote was not in a cited policy |
+| `ans_chat_02` | fallback, fallback, answered | fallback x3 | `rewrite_low_retrieval_score` (8-9s) | 1 | **No** — the same non-determinism, in the other direction; this case was already unstable |
+
+4 + 1 + 1 = 6, which is the whole drop. **The claim-span contract cost one fact
+instance out of 57 (1.8%).** The other five are the medium-band rewrite
+boundary behaving as this file has documented since the first run: two of the
+three changed cases fell back for reasons that existed before P0 and are
+unrelated to the answer contract.
+
+Across all 51 runs the fallback reasons were `unsupported_topic` x9 (the three
+refusal cases, working as designed), `rewrite_low_retrieval_score` x4,
+`rewrite_failure` x1, and `unsupported_claim_span` x1.
+
+## What improved, and what it cost
+
+* **Fact-Citation Alignment stayed at 1.000**, now over a smaller base (46/46).
+  Every fact that reached an employee was cited to a document that carries it.
+* **Alien Number Rate and Forbidden Fact Rate stayed at zero**, which is the
+  result the numeric rule was tightened to protect: figures are now checked
+  against the quoted span rather than against the whole document or the
+  question, and the rate did not move.
+* **Latency rose** (p50 6.6s -> 10.9s). The reporter now has to locate and copy a
+  span, which is more work per claim. p95 at 29.9s sits 0.1s inside the 30s
+  reporter timeout — closer than before, and the reason `ans_multi_01`'s
+  rewrite budget was exceeded twice in this run.
+* **Route Stability fell to 15/17**, both unstable cases being the medium band.
+  This is a measurement of provider variance, not of the contract.
+
+## Reading this honestly
+
+n is small, this is one model on one day, and the before/after columns are two
+runs of a non-deterministic pipeline, not a controlled experiment. The
+attribution table above is what the two transcripts support: it names the reason
+code each lost run recorded, which is a fact, rather than assigning the drop to
+the newest change, which would be a guess. A rerun will not reproduce these
+numbers exactly.
