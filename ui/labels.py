@@ -54,6 +54,10 @@ ROUTE_FILTER_OPTIONS: tuple[str, ...] = (
 
 # Thai user-facing strings, kept as named constants per repo convention.
 CHAT_PLACEHOLDER = "พิมพ์คำถามของคุณ…"
+# Shown beside the composer while the pipeline runs, not at the top of
+# the transcript: the employee is looking at the field they just typed
+# into, and a status that appears anywhere else reads as a page reload.
+THINKING_LABEL = "กำลังค้นหาจากฐานความรู้…"
 
 # Opening screen shown while this session has no history. It replaces the
 # blank first run with the two things a first-time employee needs: what the
@@ -151,7 +155,8 @@ REASON_FAMILY_TAGS: dict[ReasonFamily, tuple[str, str]] = {
 }
 TRACE_PANEL_NOTE = (
     "ทุกค่าอ่านจาก PipelineState ของ request นั้น ไม่มีการคำนวณใหม่ในชั้น UI "
-    "· เวลาต่อ node ยังไม่มีใน state จึงไม่แสดง"
+    "· เวลาต่อ node จับจากการรันจริงของ request นั้น node ที่ไม่ถูกเรียก "
+    "จะไม่มีเวลา ไม่ใช่ 0"
 )
 EVAL_PAGE_NOTE = (
     "อ่านจาก eval/BASELINE.md และ eval/*.json ตามที่บันทึกไว้ "
@@ -328,28 +333,22 @@ OPS_LOG_DISABLED_NOTE = (
 # every past session left on disk.
 SESSION_LOG_TITLE = "Blocked / Fallback — this session"
 SESSION_LOG_NOTE = (
-    "Projected from this session's requests onto the JSONL schema "
-    "(AGENTS.md section 8). It follows the search box; the route filter "
-    "applies to the request list above."
+    "Projected from this tab's requests onto the JSONL log schema. It "
+    "follows the search box; the route filter applies to the request "
+    "list above."
 )
 SESSION_LOG_EMPTY = (
-    "No request in this session was blocked or fell back."
+    "No request in this tab was blocked or fell back."
 )
 PERSISTENT_LOG_TITLE = "Persistent sink — all sessions"
-# Both spellings of the export, so the button can say what it is about to
-# write instead of leaving the reader to infer it from a disabled control.
-EXPORT_LABEL = "Export JSONL"
-EXPORT_HELP_SESSION = (
-    "Download {session} row(s) from this session. The persistent sink is "
-    "not included: ENABLE_OPS_VIEW is off."
+# The export follows the section on screen, so the button says only what
+# it is and the popover states the scope. Formats are (label, extension,
+# mime); the serialisers live in ui.formatting.
+EXPORT_LABEL = "Export"
+EXPORT_FORMATS: tuple[tuple[str, str, str], ...] = (
+    ("JSONL", "jsonl", "application/x-ndjson"),
+    ("CSV", "csv", "text/csv"),
+    ("Markdown", "md", "text/markdown"),
 )
-EXPORT_HELP_BOTH = (
-    "Download {session} row(s) from this session and {persistent} row(s) "
-    "from the persistent sink. The scope field says which is which."
-)
-EXPORT_HELP_EMPTY = (
-    "Nothing to export yet: no request in this session, and no readable "
-    "sink row."
-)
-EXPORT_FILE_NAME = "araya_telemetry_export.jsonl"
-SNIPPET_CHARS = 180
+EXPORT_SCOPE_NOTE = "{section} · {rows} row(s)"
+EXPORT_EMPTY_NOTE = "Nothing to export on this page yet."

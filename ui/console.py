@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import html
 import json
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
@@ -41,11 +42,10 @@ from ui.labels import (
     EMPLOYEE_VIEW,
     EVAL_DIR,
     EVAL_PAGE_NOTE,
-    EXPORT_FILE_NAME,
-    EXPORT_HELP_BOTH,
-    EXPORT_HELP_EMPTY,
-    EXPORT_HELP_SESSION,
+    EXPORT_EMPTY_NOTE,
+    EXPORT_FORMATS,
     EXPORT_LABEL,
+    EXPORT_SCOPE_NOTE,
     HELDOUT_BADGE,
     MAX_LOG_ROWS,
     MISSING_KEY_WARNING,
@@ -88,7 +88,16 @@ from ui.formatting import (
     _log_table_html,
     _matches_filters,
     _metric_rows_html,
+    _corpus_export_rows,
+    _evaluation_export_rows,
+    _overview_export_rows,
+    _overview_stats,
     _parse_baseline_metrics,
+    _request_key,
+    _rows_to_csv,
+    _rows_to_jsonl,
+    _rows_to_markdown,
+    _runtime_export_rows,
     _score_band,
     _session_export_rows,
     _stat_card_html,
@@ -97,9 +106,10 @@ from ui.formatting import (
 )
 from ui.runtime import (
     _PAGE_REFS,
+    _all_requests,
+    _sessions,
     _corpus,
     _graph_and_retriever,
-    _session_id,
 )
 
 def _threshold_axis_html() -> str:
@@ -133,7 +143,7 @@ def _threshold_axis_html() -> str:
     )
     dots: list[str] = []
     legend: list[str] = []
-    for row in st.session_state.get("history", []):
+    for row in _all_requests():
         score = _gating_score(row["state"])
         if score is None:
             continue
@@ -186,7 +196,7 @@ def _triage_groups() -> list[tuple[str, int, str, ReasonFamily | None]]:
     (Finding 7), so it is not aggregated here.
     """
     groups: dict[str, list[dict]] = {}
-    for row in st.session_state.get("history", []):
+    for row in _all_requests():
         state: PipelineState = row["state"]
         reason = state.get("fallback_reason") or state.get("guardrail_reason")
         if reason is None:
@@ -202,31 +212,28 @@ def _triage_groups() -> list[tuple[str, int, str, ReasonFamily | None]]:
 
 
 def _render_console_overview() -> None:
-    """Overview: route split, the threshold axis, and fallback triage."""
-    history = st.session_state.get("history", [])
+    """Overview: route split, the threshold axis, and fallback triage.
+
+    Scope is the browser tab, not one transcript: the counts cover every
+    session the rail lists, which is what makes them comparable with the
+    request list in Query Logs.
+    """
+    requests = _all_requests()
+    sessions = _sessions()
     _, _, built_at = _graph_and_retriever()
     st.markdown(
         '<p class="araya-headline">Overview</p>', unsafe_allow_html=True
     )
     st.caption(
-        f"session {_session_id()} · {len(history)} requests · "
+        f"{len(sessions)} sessions · {len(requests)} requests · "
         f"index build {built_at.strftime('%H:%M:%S')}"
     )
-    labels = [_display_route(row["state"])[0] for row in history]
-    total = len(history) or 1
-    answered = sum(1 for label in labels if label in {"Direct", "Rewrite"})
-    fallback = labels.count("Fallback")
-    blocked = labels.count("Blocked")
+    stats = _overview_stats(requests)
+    total = stats["requests"] or 1
     latency = (
-        f"{sum(row['latency_seconds'] for row in history) / len(history):.3f}"
-        if history
-        else "–"
-    )
-    # Counted from the state rather than inferred from the route: a
-    # medium-band request the alias catalog settled spends one call, and
-    # one whose deadline ran out spends none.
-    llm_calls = sum(
-        int(row["state"].get("llm_calls", 0)) for row in history
+        "–"
+        if stats["avg_latency_seconds"] is None
+        else f"{stats['avg_latency_seconds']:.3f}"
     )
     reasons = _triage_groups()
     # The input family is exactly the guardrail's own codes, so it is
@@ -247,26 +254,34 @@ def _render_console_overview() -> None:
         ),
         "–",
     )
-    cells = (
+    # One grid rather than four columns: st.columns leaves each card at
+    # its own content height, and the only card carrying a footnote was
+    # then taller than the row and overlapped the panels below it.
+    cards = (
         _stat_card_html(
-            "Answered", str(answered), f"/ {len(history)} requests",
-            answered / total, "green",
+            "Answered",
+            str(stats["answered"]),
+            f"/ {stats['requests']} requests",
+            stats["answered"] / total,
+            "green",
         ),
         _stat_card_html(
-            "Fallback", str(fallback), fallback_reason,
-            fallback / total, "amber",
+            "Fallback", str(stats["fallback"]), fallback_reason,
+            stats["fallback"] / total, "amber",
         ),
         _stat_card_html(
-            "Blocked", str(blocked), blocked_reason, blocked / total, "red",
+            "Blocked", str(stats["blocked"]), blocked_reason,
+            stats["blocked"] / total, "red",
         ),
         _stat_card_html(
-            "Avg latency", latency, "s · this session",
-            note=f"{llm_calls} LLM call ในเซสชันนี้",
+            "Avg latency", latency, "s · this tab",
+            note=f"{stats['llm_calls']} LLM call ในแท็บนี้",
         ),
     )
-    for column, card in zip(st.columns(4), cells):
-        with column:
-            st.markdown(card, unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="araya-card-grid">{"".join(cards)}</div>',
+        unsafe_allow_html=True,
+    )
 
     left, right = st.columns([1.35, 1], gap="medium")
     with left:
@@ -307,7 +322,10 @@ def _render_trace_panel(record: dict) -> None:
     label, _, _ = _display_route(state)
     rewrites = state.get("rewritten_queries")
     rows_html: list[str] = []
-    for node, tone, glyph, detail in _trace_rows(state):
+    # Timings are measured per request by the streaming run; a request
+    # recorded before that existed simply shows none.
+    timings = record.get("node_seconds") or {}
+    for node, tone, glyph, detail, duration in _trace_rows(state, timings):
         rows_html.append(
             f'<div class="araya-trace-row'
             f'{" araya-trace-row--skipped" if tone == "skip" else ""}">'
@@ -315,6 +333,8 @@ def _render_trace_panel(record: dict) -> None:
             f'<span class="material-symbols-outlined">{glyph}</span></span>'
             f'<span class="araya-trace-node araya-mono-face">{node}</span>'
             f'<span class="araya-trace-detail">{html.escape(detail)}</span>'
+            f'<span class="araya-trace-time araya-mono-face">'
+            f"{html.escape(duration)}</span>"
             "</div>"
         )
         if node == "rewrite" and rewrites:
@@ -346,20 +366,26 @@ def _render_trace_panel(record: dict) -> None:
 
 
 def _render_console_logs(query_filter: str, log: LogReadResult) -> None:
-    """Query Logs: the session's requests beside one request's trace."""
-    history = st.session_state.get("history", [])
+    """Query Logs: every request of this tab beside one request's trace.
+
+    The list spans all sessions, not the one the assistant is currently
+    showing: an operator reading the console is asking what the app did.
+    Requests are keyed on session and id together, because the request id
+    restarts at ``Q-001`` in every session.
+    """
+    requests = _all_requests()
     st.markdown(
         '<p class="araya-headline">Requests</p>', unsafe_allow_html=True
     )
-    if not history:
-        st.info("No requests in this session yet.")
+    if not requests:
+        st.info("No requests in this tab yet.")
         st.divider()
         _render_log_section(log, query_filter)
         return
     counts = {label: 0 for label in ROUTE_FILTER_OPTIONS}
-    for row in history:
+    for row in requests:
         counts[_display_route(row["state"])[0]] += 1
-    options = [f"ทั้งหมด {len(history)}"] + [
+    options = [f"ทั้งหมด {len(requests)}"] + [
         f"{label} {counts[label]}" for label in ROUTE_FILTER_OPTIONS
     ]
     selected = st.segmented_control(
@@ -374,19 +400,19 @@ def _render_console_logs(query_filter: str, log: LogReadResult) -> None:
         routes = (selected.rsplit(" ", 1)[0],)
     visible = [
         row
-        for row in reversed(history)
+        for row in reversed(requests)
         if _matches_filters(row, query_filter, routes)
     ]
     if not visible:
-        st.info("No requests in this session match the current filters.")
+        st.info("No request in this tab matches the current filters.")
         st.divider()
         _render_log_section(log, query_filter)
         return
 
-    selected_id = st.session_state.get("console_request")
-    if selected_id not in {row["request_id"] for row in visible}:
-        selected_id = visible[0]["request_id"]
-        st.session_state["console_request"] = selected_id
+    selected_key = st.session_state.get("console_request")
+    if selected_key not in {_request_key(row) for row in visible}:
+        selected_key = _request_key(visible[0])
+        st.session_state["console_request"] = selected_key
 
     left, right = st.columns([1, 1.2], gap="medium")
     with left:
@@ -404,29 +430,27 @@ def _render_console_logs(query_filter: str, log: LogReadResult) -> None:
             meta = " · ".join(
                 part
                 for part in (
+                    row["session_id"],
                     _clock(row["timestamp"]),
                     score if raw is not None else reason,
                     f"{row['latency_seconds']:.3f}s",
                 )
                 if part
             )
+            key = _request_key(row)
             if st.button(
                 f":{_ROUTE_BADGE_COLOURS[css]}-badge[{label}] "
                 f"**{row['request_id']}**  \n{row['query']}  \n`{meta}`",
-                key=f"araya_req_{row['request_id']}",
-                type=(
-                    "primary"
-                    if row["request_id"] == selected_id
-                    else "secondary"
-                ),
+                key=f"araya_req_{key}",
+                type="primary" if key == selected_key else "secondary",
                 use_container_width=True,
                 wrap=True,
             ):
-                st.session_state["console_request"] = row["request_id"]
+                st.session_state["console_request"] = key
                 st.rerun()
     with right:
         record = next(
-            row for row in visible if row["request_id"] == selected_id
+            row for row in visible if _request_key(row) == selected_key
         )
         _render_trace_panel(record)
     st.divider()
@@ -451,9 +475,7 @@ def _render_session_log(query_filter: str) -> None:
         unsafe_allow_html=True,
     )
     st.caption(SESSION_LOG_NOTE)
-    rows = _degraded_session_rows(
-        _session_export_rows(st.session_state.get("history", []))
-    )
+    rows = _degraded_session_rows(_session_export_rows(_all_requests()))
     if not rows:
         st.info(SESSION_LOG_EMPTY)
         return
@@ -522,18 +544,26 @@ def _render_log_section(log: LogReadResult, query_filter: str = "") -> None:
 
 
 def _render_kb_stats() -> None:
-    """Index-health strip: real counts and this process's build time."""
+    """Index-health strip: real counts and this process's build time.
+
+    Drawn on the same card grid the rest of the console uses, which is
+    what keeps the three cards the same height and leaves a measured gap
+    before the document list rather than letting it butt against them.
+    """
     documents = _corpus()
     _, _, built_at = _graph_and_retriever()
-    stats = st.columns(3)
     cells = (
         ("Indexed", f"{len(documents)} / {len(documents)}", ""),
         ("Duplicate IDs", "0", "enforced at load"),
         ("Index built", built_at.strftime("%H:%M:%S"), "this process"),
     )
-    for column, (label, value, unit) in zip(stats, cells):
-        with column:
-            st.markdown(_kpi_html(label, value, unit), unsafe_allow_html=True)
+    cards = "".join(
+        _kpi_html(label, value, unit) for label, value, unit in cells
+    )
+    st.markdown(
+        f'<div class="araya-card-grid araya-card-grid--three">{cards}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -624,47 +654,51 @@ def _render_evaluation() -> None:
         # than a result. Saying so is the honest option; inventing a
         # number from an older block would report the wrong phase.
         st.warning(BASELINE_UNPARSED)
-    for index in range(0, len(groups), 2):
-        for column, group in zip(
-            st.columns(2, gap="medium"), groups[index:index + 2]
-        ):
-            name = group["name"]
-            badge = ""
-            if name.lower().startswith("calibration"):
-                badge = (
-                    f'<span class="araya-badge araya-badge--tuning">'
-                    f"{CALIBRATION_BADGE}</span>"
-                )
-            elif name.lower().startswith("held"):
-                badge = (
-                    f'<span class="araya-badge araya-badge--reporting">'
-                    f"{HELDOUT_BADGE}</span>"
-                )
-            cases = (
-                f'<span class="araya-panel-meta araya-mono-face">'
-                f'{group["cases"]} cases</span>'
-                if group["cases"] is not None
-                else ""
+    # One grid for every group card: the previous two-column layout left
+    # cards in a row at different heights and needed a spacer element
+    # between rows, so the spacing between panels was never the same twice.
+    cards: list[str] = []
+    for group in groups:
+        name = group["name"]
+        badge = ""
+        if name.lower().startswith("calibration"):
+            badge = (
+                f'<span class="araya-badge araya-badge--tuning">'
+                f"{CALIBRATION_BADGE}</span>"
             )
-            # Lines the block carried but did not measure -- "every other
-            # metric unchanged from Phase 8" -- are shown as written: they
-            # are why a group can legitimately list one metric.
-            remarks = "".join(
-                f'<div class="araya-panel-note">{html.escape(line)}</div>'
-                for line in group["remarks"]
+        elif name.lower().startswith("held"):
+            badge = (
+                f'<span class="araya-badge araya-badge--reporting">'
+                f"{HELDOUT_BADGE}</span>"
             )
-            with column:
-                st.markdown(
-                    '<div class="araya-panel">'
-                    '<div class="araya-panel-head">'
-                    f'<span class="araya-panel-title">{html.escape(name)}'
-                    f"</span>{badge}{cases}</div>"
-                    f'<div style="margin-top:12px">'
-                    f'{_metric_rows_html(group["metrics"])}</div>'
-                    f"{remarks}</div>",
-                    unsafe_allow_html=True,
-                )
-        st.markdown("")
+        cases = (
+            f'<span class="araya-panel-meta araya-mono-face">'
+            f'{group["cases"]} cases</span>'
+            if group["cases"] is not None
+            else ""
+        )
+        # Lines the block carried but did not measure -- "every other
+        # metric unchanged from Phase 8" -- are shown as written: they
+        # are why a group can legitimately list one metric.
+        remarks = "".join(
+            f'<div class="araya-panel-note">{html.escape(line)}</div>'
+            for line in group["remarks"]
+        )
+        cards.append(
+            '<div class="araya-panel">'
+            '<div class="araya-panel-head">'
+            f'<span class="araya-panel-title">{html.escape(name)}'
+            f"</span>{badge}{cases}</div>"
+            f'<div style="margin-top:12px">'
+            f'{_metric_rows_html(group["metrics"])}</div>'
+            f"{remarks}</div>"
+        )
+    if cards:
+        st.markdown(
+            '<div class="araya-card-grid araya-card-grid--panels">'
+            f'{"".join(cards)}</div>',
+            unsafe_allow_html=True,
+        )
 
     fixtures = _eval_fixture_counts()
     if fixtures:
@@ -697,31 +731,73 @@ def _render_evaluation() -> None:
 
 
 def _render_kb_cards() -> None:
-    """One card per validated corpus document, in two columns."""
+    """The index on the left, the selected document's text on the right.
+
+    A card used to be markup only, which meant the console could say a
+    document was indexed but never show what had been indexed. The rows
+    are buttons now and the body is rendered as plain text rather than as
+    Markdown: corpus text is evidence, and evidence that can restyle the
+    page it is being audited on is evidence nobody can read plainly.
+    """
     documents = _corpus()
-    cards: list[str] = []
-    for document in documents:
-        icon_css = (
-            "policy" if document.source_type == "policy" else "chat"
-        )
-        icon = "description" if icon_css == "policy" else "forum"
-        cards.append(
-            '<div class="araya-doc-card">'
-            f'<div class="araya-doc-icon araya-doc-icon--{icon_css}">'
-            f'<span class="material-symbols-outlined">{icon}</span></div>'
-            '<div style="flex:1;min-width:0">'
-            f'<span class="araya-source-id">{document.source_id}</span>'
-            '<span class="araya-indexed">Indexed</span>'
-            f'<div class="araya-source-title">{html.escape(document.title)}'
-            f" · {document.source_type}</div>"
-            "</div></div>"
-        )
-    left, right = st.columns(2)
-    half = (len(cards) + 1) // 2
+    if not documents:
+        st.info("The corpus is empty.")
+        return
+    selected_id = st.session_state.get("console_document")
+    if selected_id not in {document.source_id for document in documents}:
+        selected_id = documents[0].source_id
+        st.session_state["console_document"] = selected_id
+
+    left, right = st.columns([1, 1.3], gap="medium")
     with left:
-        st.markdown("".join(cards[:half]), unsafe_allow_html=True)
+        for document in documents:
+            # The glyph tells policy from chat at a glance. Streamlit
+            # places it inline before the first line, so the stylesheet
+            # lifts it out of the text flow and keeps all three lines on
+            # one left edge.
+            icon = (
+                "description" if document.source_type == "policy" else "forum"
+            )
+            if st.button(
+                f"**{document.source_id}**  \n{document.title}  \n"
+                f"`{document.source_type} · {document.status}`",
+                icon=f":material/{icon}:",
+                # The type is in the key so the stylesheet can tint the
+                # glyph by stratum: policy is authoritative, chat is not.
+                key=f"araya_doc_{document.source_type}_{document.source_id}",
+                type=(
+                    "primary"
+                    if document.source_id == selected_id
+                    else "secondary"
+                ),
+                use_container_width=True,
+                wrap=True,
+            ):
+                st.session_state["console_document"] = document.source_id
+                st.rerun()
     with right:
-        st.markdown("".join(cards[half:]), unsafe_allow_html=True)
+        document = next(
+            doc for doc in documents if doc.source_id == selected_id
+        )
+        topics = ", ".join(document.topics) or "–"
+        canonical = ", ".join(document.canonical_source_ids) or "–"
+        st.markdown(
+            '<div class="araya-panel"><div class="araya-panel-head">'
+            f'<span class="araya-panel-title araya-mono-face">'
+            f"{html.escape(document.source_id)}</span>"
+            f'<span class="araya-panel-meta">{html.escape(document.title)}'
+            "</span></div>"
+            f'<div class="araya-panel-note" style="margin:8px 0 0">'
+            f"type {html.escape(document.source_type)} · "
+            f"authority {html.escape(document.authority)} · "
+            f"status {html.escape(document.status)}<br>"
+            f"topics {html.escape(topics)} · "
+            f"canonical {html.escape(canonical)} · "
+            f"quarantined lines {document.quarantined_line_count}"
+            "</div></div>",
+            unsafe_allow_html=True,
+        )
+        st.code(document.content, language=None, wrap_lines=True)
 
 
 def _render_knowledge_base() -> None:
@@ -736,10 +812,15 @@ def _render_knowledge_base() -> None:
     _render_kb_cards()
 
 
-def _render_runtime_section() -> None:
-    """Frozen configuration and real pipeline components, nothing more."""
+def _runtime_snapshot() -> dict:
+    """Return the frozen runtime configuration the console reports.
+
+    Split from the renderer so the panel and its export read the same
+    dict: the credential appears here as presence, never as a value, and
+    that stays true of anything built from it.
+    """
     _, retriever, _ = _graph_and_retriever()
-    runtime = {
+    return {
         "retriever": {
             "type": "character_tfidf",
             "analyzer": "char",
@@ -783,6 +864,11 @@ def _render_runtime_section() -> None:
             "max_query_chars": config.MAX_QUERY_CHARS,
         },
     }
+
+
+def _render_runtime_section() -> None:
+    """Frozen configuration and real pipeline components, nothing more."""
+    runtime = _runtime_snapshot()
     st.markdown(
         '<details class="araya-details" open><summary>'
         '<span class="material-symbols-outlined">terminal</span>'
@@ -807,7 +893,7 @@ def _console_rail_badge(label: str) -> str:
     rather than a zero that looks like a failure.
     """
     if label == "Query Logs":
-        return str(len(st.session_state.get("history", [])))
+        return str(len(_all_requests()))
     if label == "Knowledge Base":
         return str(len(_corpus()))
     return ""
@@ -856,23 +942,119 @@ def _leave_for_assistant() -> None:
         st.session_state["araya_goto_assistant"] = True
 
 
-def _render_console_header(log: LogReadResult) -> str:
-    """Console app bar: view switch, search, theme, and export.
+def _export_payload(
+    section: str, log: LogReadResult, query_filter: str
+) -> tuple[str, list[dict], int]:
+    """Collect what the section on screen would export.
 
-    Search and export move out of the page body and into the bar, where
-    they stay in the same place across every section.
+    Every branch reuses the builder the panel itself renders from, so an
+    export cannot show a number the page does not, and the persistent
+    sink still only appears when ``read_persistent_events`` let it be
+    read at all.
 
     Args:
-        log: Bounded sink read backing the export button. It is empty
-            while ``ENABLE_OPS_VIEW`` is off, which disables the export
-            with no separate rule to keep in sync.
+        section: Rail section currently selected.
+        log: Bounded sink read for this run.
+        query_filter: Free-text filter from the app bar.
+
+    Returns:
+        The export title, its rows, and how many of those rows came from
+        the persistent sink.
+    """
+    if section == "Overview":
+        requests = _all_requests()
+        return (
+            "Overview",
+            _overview_export_rows(
+                _overview_stats(requests), _triage_groups(), len(_sessions())
+            ),
+            0,
+        )
+    if section == "Query Logs":
+        rows = [
+            row
+            for row in _session_export_rows(_all_requests())
+            if _log_matches(row, query_filter)
+        ]
+        persistent = [
+            dict(record, scope="persistent")
+            for record in log.records
+            if _log_matches(record, query_filter)
+        ]
+        return "Query Logs", rows + persistent, len(persistent)
+    if section == "Evaluation":
+        return (
+            "Evaluation",
+            _evaluation_export_rows(
+                _baseline_snapshot(), _eval_fixture_counts()
+            ),
+            0,
+        )
+    if section == "Knowledge Base":
+        return "Knowledge Base", _corpus_export_rows(_corpus()), 0
+    return "Runtime", _runtime_export_rows(_runtime_snapshot()), 0
+
+
+def _render_export_popover(
+    section: str, log: LogReadResult, query_filter: str
+) -> None:
+    """One button that offers the page's own data in three formats.
+
+    The formats share one row shape, so JSONL, CSV and Markdown are three
+    serialisations of the same rows rather than three exports. The
+    popover states the page and the row count and nothing else: what the
+    rows cover is what the page itself already shows.
+    """
+    with st.popover(
+        EXPORT_LABEL, icon=":material/download:", use_container_width=True
+    ):
+        title, rows, _ = _export_payload(section, log, query_filter)
+        st.caption(
+            EXPORT_SCOPE_NOTE.format(section=title, rows=len(rows))
+            if rows
+            else EXPORT_EMPTY_NOTE
+        )
+        stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M")
+        base = f"araya_{title.lower().replace(' ', '_')}_{stamp}"
+        payloads = {
+            "jsonl": _rows_to_jsonl(rows),
+            "csv": _rows_to_csv(rows),
+            "md": _rows_to_markdown(title, rows),
+        }
+        for label, extension, mime in EXPORT_FORMATS:
+            st.download_button(
+                label,
+                data=payloads[extension],
+                file_name=f"{base}.{extension}",
+                mime=mime,
+                key=f"araya_export_{extension}",
+                use_container_width=True,
+                # A download is not a state change, and a rerun here
+                # would rebuild the bar while the browser is still
+                # taking the file.
+                on_click="ignore",
+                disabled=not rows,
+            )
+
+
+def _render_console_header(log: LogReadResult, section: str) -> str:
+    """Console app bar: view switch, search, and the page's own actions.
+
+    Search and export live here rather than in the page body so they stay
+    in the same place across sections. The two actions share one column so
+    they read as a group pinned to the right of the bar instead of two
+    controls floating in the middle of it.
+
+    Args:
+        log: Bounded sink read backing the export.
+        section: Rail section on screen, which is what the export follows.
 
     Returns:
         The free-text filter typed into the bar.
     """
     with st.container(key="araya_console_header"):
-        switch, search, theme, export = st.columns(
-            [3, 4, 2, 2], vertical_alignment="center"
+        switch, search, actions = st.columns(
+            [3, 4, 3], vertical_alignment="center"
         )
         with switch:
             st.session_state.setdefault("araya_console_switch", OPS_VIEW)
@@ -891,58 +1073,19 @@ def _render_console_header(log: LogReadResult) -> str:
                 label_visibility="collapsed",
                 icon=":material/search:",
             )
-        with theme:
-            # A native toggle rather than the mockup's icon button: the
-            # state has to be readable at a glance, and Streamlit gives no
-            # icon-only control that also shows whether it is on.
-            st.toggle("Dark", key="console_dark")
-        with export:
-            # The export follows what this console can show, which is why
-            # it works with the sink switched off: the session rows are
-            # already on the page, and the persistent rows are only ever
-            # in ``log`` when ``read_persistent_events`` decided they may
-            # be read. The gate is not re-implemented here.
-            session_rows = [
-                row
-                for row in _session_export_rows(
-                    st.session_state.get("history", [])
+        with actions:
+            with st.container(key="araya_console_actions"):
+                theme, export = st.columns(
+                    [1, 1], vertical_alignment="center"
                 )
-                if _log_matches(row, query_filter)
-            ]
-            persistent_rows = [
-                dict(record, scope="persistent")
-                for record in log.records
-                if _log_matches(record, query_filter)
-            ]
-            rows = session_rows + persistent_rows
-            payload = "\n".join(
-                json.dumps(row, ensure_ascii=False) for row in rows
-            )
-            if not rows:
-                export_help = EXPORT_HELP_EMPTY
-            elif persistent_rows:
-                export_help = EXPORT_HELP_BOTH.format(
-                    session=len(session_rows),
-                    persistent=len(persistent_rows),
-                )
-            else:
-                export_help = EXPORT_HELP_SESSION.format(
-                    session=len(session_rows)
-                )
-            st.download_button(
-                EXPORT_LABEL,
-                data=payload,
-                file_name=EXPORT_FILE_NAME,
-                mime="application/x-ndjson",
-                icon=":material/download:",
-                use_container_width=True,
-                # Downloading is not a state change, and a rerun here
-                # would rebuild the header while the browser is still
-                # taking the file.
-                on_click="ignore",
-                disabled=not rows,
-                help=export_help,
-            )
+                with theme:
+                    # A native toggle rather than the mockup's icon
+                    # button: the state has to be readable at a glance,
+                    # and Streamlit gives no icon-only control that also
+                    # shows whether it is on.
+                    st.toggle("Dark", key="araya_dark")
+                with export:
+                    _render_export_popover(section, log, query_filter)
     if st.session_state.pop("araya_goto_assistant", False):
         st.switch_page(_PAGE_REFS["assistant"])
     return query_filter
@@ -973,11 +1116,11 @@ def _console_page() -> None:
     # The dark sheet is injected after the light tokens so it overrides
     # them; it covers the panels this console draws, while Streamlit's own
     # widgets keep following the base theme in .streamlit/config.toml.
-    if st.session_state.get("console_dark"):
+    if st.session_state.get("araya_dark"):
         st.markdown(_CONSOLE_DARK_CSS, unsafe_allow_html=True)
     log = read_persistent_events(MAX_LOG_ROWS)
     section = _render_console_sidebar()
-    query_filter = _render_console_header(log)
+    query_filter = _render_console_header(log, section)
     if not config.has_llm_credential():
         st.warning(MISSING_KEY_WARNING)
     _render_console_section(section, query_filter, log)

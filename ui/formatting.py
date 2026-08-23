@@ -12,7 +12,10 @@ in this module renders, and nothing in it decides pipeline behaviour.
 
 from __future__ import annotations
 
+import csv
 import html
+import io
+import json
 from datetime import datetime
 
 from src import config
@@ -37,7 +40,6 @@ from ui.labels import (
     SESSION_LIST_EMPTY_ENTRY,
     SESSION_LIST_EMPTY_META,
     SESSION_REQUEST_COUNT,
-    SNIPPET_CHARS,
     SOURCES_HEADER,
     _EVAL_CASE_COUNT,
     _EVAL_FRACTION,
@@ -187,11 +189,13 @@ def _answer_html(state: PipelineState) -> str:
 
 
 def _source_list_html(state: PipelineState) -> str:
-    """Build one expandable row per validated citation.
+    """Build one row per validated citation: which document, how close.
 
-    The first row opens by default: on a two-source answer it shows the
-    evidence without a click, and the rest stay one click away instead of
-    pushing the composer off the screen.
+    The rows name the evidence and no longer carry the document text.
+    The answer above them is already the grounded reading of that text,
+    and repeating a truncated copy under it invited the two to be
+    compared word by word -- while the Knowledge Base section is where a
+    document is read in full.
     """
     documents_by_id = {
         document.source_id: document
@@ -208,24 +212,13 @@ def _source_list_html(state: PipelineState) -> str:
             f'<span class="araya-cite-meta">{html.escape(source_id)}'
             f"{f' · {document.source_type}' if document else ''}</span></span>"
         )
-        if document is None:
-            # The id passed validation but its document is not in the
-            # selected evidence: name it rather than dropping a citation.
-            rows.append(
-                '<div class="araya-cite-card">'
-                f'<div class="araya-cite-row">{head}</div></div>'
-            )
-            continue
-        snippet = document.content[:SNIPPET_CHARS]
-        if len(document.content) > SNIPPET_CHARS:
-            snippet += "…"
+        # A citation whose document is missing from the selected evidence
+        # is named rather than dropped: the id passed validation, and
+        # hiding the row would hide that mismatch.
+        score_html = "" if document is None else _cite_score_html(document)
         rows.append(
-            f'<details class="araya-cite-card"{" open" if number == 1 else ""}>'
-            f"<summary>{head}{_cite_score_html(document)}"
-            '<span class="material-symbols-outlined araya-chevron">'
-            "expand_more</span></summary>"
-            f'<div class="araya-cite-body">{html.escape(snippet)}</div>'
-            "</details>"
+            '<div class="araya-cite-card">'
+            f'<div class="araya-cite-row">{head}{score_html}</div></div>'
         )
     return "".join(rows)
 
@@ -428,15 +421,39 @@ def _band_word(score: float) -> str:
     ]
 
 
-def _trace_rows(state: PipelineState) -> list[tuple[str, str, str, str]]:
+def _node_time_label(seconds: float | None) -> str:
+    """Format one node's measured duration, empty when it never ran.
+
+    A node that did not run has no measurement, and printing ``0.000s``
+    for it would claim the opposite of what happened. Deterministic nodes
+    finish in well under a millisecond while a provider call takes tens of
+    seconds, so the unit follows the value instead of flattening the fast
+    half of the pipeline to three zeroes.
+    """
+    if seconds is None:
+        return ""
+    if seconds >= 1:
+        return f"{seconds:.2f}s"
+    return f"{seconds * 1000:.1f}ms"
+
+
+def _trace_rows(
+    state: PipelineState, node_seconds: dict[str, float] | None = None
+) -> list[tuple[str, str, str, str, str]]:
     """Describe every graph node's outcome for one request.
 
+    Args:
+        state: The request's final pipeline state.
+        node_seconds: Seconds per node measured by ``ui.runtime`` around
+            the streamed run, keyed by the graph's node names. Omitted
+            for a request recorded before timings existed, which then
+            shows no per-node time rather than a zero.
+
     Returns:
-        ``(node, badge tone, glyph, detail)`` in graph order. Nodes the
-        request never reached are returned too, dimmed by the caller, so
-        the panel shows the shape of the pipeline and not only the path
-        taken. Per-node timing is deliberately absent: ``PipelineState``
-        carries none, and inventing it here would be a fiction.
+        ``(node, badge tone, glyph, detail, duration)`` in graph order.
+        Nodes the request never reached are returned too, dimmed by the
+        caller, so the panel shows the shape of the pipeline and not only
+        the path taken.
     """
     route = state.get("route")
     blocked = route == "blocked"
@@ -614,7 +631,11 @@ def _trace_rows(state: PipelineState) -> list[tuple[str, str, str, str]]:
         if degraded
         else ("fallback", *skipped)
     )
-    return rows
+    timings = node_seconds or {}
+    return [
+        (node, tone, glyph, detail, _node_time_label(timings.get(node)))
+        for node, tone, glyph, detail in rows
+    ]
 
 
 def _clock(timestamp: str) -> str:
@@ -755,6 +776,22 @@ def _session_rail_label(session: dict) -> str:
     return f"{_escape_markdown(question)}  \n`{clock} · {count}`"
 
 
+def _request_key(record: dict) -> str:
+    """Identify one request across sessions.
+
+    The request id restarts at ``Q-001`` in every session, so the id alone
+    cannot key a selection once the console lists more than one session.
+
+    Args:
+        record: A request record carrying ``session_id`` (as
+            ``ui.runtime._all_requests`` attaches it) and ``request_id``.
+
+    Returns:
+        ``"<session_id>/<request_id>"``.
+    """
+    return f"{record.get('session_id', '')}/{record['request_id']}"
+
+
 def _session_export_rows(history: list[dict]) -> list[dict]:
     """Project this session's requests onto the JSONL telemetry schema.
 
@@ -767,13 +804,14 @@ def _session_export_rows(history: list[dict]) -> list[dict]:
 
     The rows are session telemetry, not a copy of the sink: they cover
     every route rather than the degraded ones, they carry the presentation
-    ``request_id`` the console lists them under, and ``latency_ms`` is the
-    wall time the UI measured around ``invoke`` rather than the graph's
-    own reading. ``scope`` names which of the two an exported line came
-    from, so a file holding both stays readable.
+    ``request_id`` and ``session_id`` the console lists them under, and
+    ``latency_ms`` is the wall time the UI measured around ``invoke``
+    rather than the graph's own reading. ``scope`` names which of the two
+    an exported line came from, so a file holding both stays readable.
 
     Args:
-        history: Session records as ``ui.runtime`` stored them.
+        history: Request records, as ``ui.runtime._all_requests`` returns
+            them; a record without ``session_id`` exports an empty one.
 
     Returns:
         One dict per request, oldest first, JSON-serialisable as it is.
@@ -785,6 +823,10 @@ def _session_export_rows(history: list[dict]) -> list[dict]:
         rows.append(
             {
                 "scope": "session",
+                # Named per row because the console aggregates the tab:
+                # the request id restarts at Q-001 in every session, so a
+                # file of rows without this cannot be read back.
+                "session_id": record.get("session_id", ""),
                 "request_id": record["request_id"],
                 "timestamp": record["timestamp"],
                 "query": record["query"],
@@ -808,6 +850,9 @@ def _session_export_rows(history: list[dict]) -> list[dict]:
                 "scope_topics": list(state.get("scope_topics", [])),
                 "scope_reason": state.get("scope_reason"),
                 "latency_ms": int(record["latency_seconds"] * 1000),
+                # Where that latency went, node by node, as the trace
+                # panel shows it. Absent nodes never ran.
+                "node_seconds": dict(record.get("node_seconds") or {}),
                 "llm_calls": state.get("llm_calls", 0),
             }
         )
@@ -1058,6 +1103,264 @@ def _baseline_run_html(runs: list[tuple[str, str]]) -> str:
             f"{html.escape(result)}</span></div>"
         )
     return "".join(rows)
+
+
+def _export_cell(value: object) -> str:
+    """Flatten one exported value for a text table.
+
+    JSONL keeps the value's own type; CSV and Markdown are flat formats,
+    so a list becomes a semicolon-joined string, a mapping -- the per-node
+    timings -- becomes ``key=value`` pairs, and a missing value an empty
+    cell rather than the word ``None``.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return "; ".join(f"{key}={item}" for key, item in value.items())
+    if isinstance(value, (list, tuple)):
+        return "; ".join(str(item) for item in value)
+    return str(value)
+
+
+def _export_columns(rows: list[dict]) -> list[str]:
+    """Return the column order of an export: keys in first-seen order.
+
+    A union rather than the first row's keys: the exports mix row shapes
+    on purpose -- an overview holds KPI rows beside triage rows -- and a
+    column that only later rows carry must not be dropped.
+    """
+    columns: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in columns:
+                columns.append(key)
+    return columns
+
+
+def _rows_to_jsonl(rows: list[dict]) -> str:
+    """Serialise exported rows as one JSON object per line."""
+    return "\n".join(
+        json.dumps(row, ensure_ascii=False) for row in rows
+    )
+
+
+def _rows_to_csv(rows: list[dict]) -> str:
+    """Serialise exported rows as CSV with a header line.
+
+    Uses the standard library writer rather than string joining, so a
+    query containing a comma or a quote stays one field.
+    """
+    if not rows:
+        return ""
+    columns = _export_columns(rows)
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns, lineterminator="\n")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(
+            {key: _export_cell(row.get(key)) for key in columns}
+        )
+    return buffer.getvalue()
+
+
+def _rows_to_markdown(title: str, rows: list[dict]) -> str:
+    """Serialise exported rows as a Markdown heading and one table.
+
+    Pipes inside a value are escaped: an unescaped one would split a cell
+    and silently shift every column after it.
+    """
+    if not rows:
+        return f"# {title}\n\n_No rows._\n"
+    columns = _export_columns(rows)
+    lines = [f"# {title}", ""]
+    lines.append("| " + " | ".join(columns) + " |")
+    lines.append("|" + "|".join("---" for _ in columns) + "|")
+    for row in rows:
+        cells = [
+            _export_cell(row.get(key)).replace("|", "\\|").replace("\n", " ")
+            for key in columns
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def _overview_stats(requests: list[dict]) -> dict:
+    """Summarise the tab's requests the way the overview reads them.
+
+    One source for the panel and its export, so a number can never be
+    computed twice and disagree with itself.
+
+    Args:
+        requests: Request records, as ``ui.runtime._all_requests`` returns.
+
+    Returns:
+        Counts per outcome, the request total, the mean wall latency
+        (``None`` with no requests) and the provider calls spent.
+    """
+    labels = [_display_route(row["state"])[0] for row in requests]
+    return {
+        "requests": len(requests),
+        "answered": sum(
+            1 for label in labels if label in {"Direct", "Rewrite"}
+        ),
+        "fallback": labels.count("Fallback"),
+        "blocked": labels.count("Blocked"),
+        "avg_latency_seconds": (
+            round(
+                sum(row["latency_seconds"] for row in requests)
+                / len(requests),
+                3,
+            )
+            if requests
+            else None
+        ),
+        # From the state rather than inferred from the route: a
+        # medium-band request the alias catalog settled spends one call,
+        # and one whose deadline ran out spends none.
+        "llm_calls": sum(
+            int(row["state"].get("llm_calls", 0)) for row in requests
+        ),
+    }
+
+
+def _overview_export_rows(
+    stats: dict,
+    triage: list[tuple],
+    sessions: int,
+) -> list[dict]:
+    """Build the Overview export: its stat cards, then its triage rows.
+
+    Args:
+        stats: Result of ``_overview_stats``.
+        triage: ``(reason, count, newest query, family)`` per reason code,
+            as the triage panel lists them.
+        sessions: How many sessions the counts span.
+
+    Returns:
+        One row per stat and one per reason code, in the order the page
+        reads them.
+    """
+    rows: list[dict] = [
+        {"group": "scope", "metric": "sessions", "value": sessions,
+         "detail": ""},
+        {"group": "requests", "metric": "total",
+         "value": stats["requests"], "detail": ""},
+    ]
+    for outcome in ("answered", "fallback", "blocked"):
+        rows.append(
+            {
+                "group": "requests",
+                "metric": outcome,
+                "value": stats[outcome],
+                "detail": f"of {stats['requests']} requests",
+            }
+        )
+    rows.append(
+        {
+            "group": "cost",
+            "metric": "avg_latency_seconds",
+            "value": stats["avg_latency_seconds"],
+            "detail": "wall time measured around the graph",
+        }
+    )
+    rows.append(
+        {"group": "cost", "metric": "llm_calls",
+         "value": stats["llm_calls"], "detail": ""}
+    )
+    for reason, count, query, family in triage:
+        rows.append(
+            {
+                "group": "unanswered",
+                "metric": str(reason),
+                "value": count,
+                "detail": query,
+                "family": family.value if family is not None else "",
+            }
+        )
+    return rows
+
+
+def _evaluation_export_rows(
+    groups: list[dict], fixtures: list[tuple[str, int, str]]
+) -> list[dict]:
+    """Build the Evaluation export: recorded metrics, then fixture counts.
+
+    Args:
+        groups: Parsed baseline groups from ``_parse_baseline_metrics``.
+        fixtures: ``(file name, case count, breakdown)`` per fixture file.
+
+    Returns:
+        One row per metric and one per fixture file. Nothing is measured
+        here: every number is what the artefacts on disk say.
+    """
+    rows: list[dict] = []
+    for group in groups:
+        for name, passed, total, remark in group["metrics"]:
+            rows.append(
+                {
+                    "group": group["name"],
+                    "metric": name,
+                    "passed": passed,
+                    "total": total,
+                    "cases": group["cases"],
+                    "remark": remark,
+                }
+            )
+    for file_name, cases, breakdown in fixtures:
+        rows.append(
+            {
+                "group": "fixtures on disk",
+                "metric": file_name,
+                "passed": "",
+                "total": cases,
+                "cases": cases,
+                "remark": breakdown,
+            }
+        )
+    return rows
+
+
+def _corpus_export_rows(documents: list) -> list[dict]:
+    """Build the Knowledge Base export: the index as the loader validated it.
+
+    Document text is deliberately not exported: the panel lists the index,
+    not the corpus body, and an export is not a way to take the documents
+    out of the repository they already live in.
+    """
+    return [
+        {
+            "source_id": document.source_id,
+            "title": document.title,
+            "source_type": document.source_type,
+        }
+        for document in documents
+    ]
+
+
+def _runtime_export_rows(runtime: dict) -> list[dict]:
+    """Flatten the runtime panel's JSON into one row per setting.
+
+    The panel's own dict is the input, so the export cannot show a
+    configuration the page does not: in particular the credential travels
+    as the panel's ``configured``/``missing`` word, never as a value.
+    """
+    rows: list[dict] = []
+    for section, settings in runtime.items():
+        if not isinstance(settings, dict):
+            rows.append(
+                {"section": "", "key": str(section),
+                 "value": _export_cell(settings)}
+            )
+            continue
+        for key, value in settings.items():
+            rows.append(
+                {
+                    "section": str(section),
+                    "key": str(key),
+                    "value": _export_cell(value),
+                }
+            )
+    return rows
 
 
 def _metric_rows_html(metrics: list[tuple[str, int, int, str]]) -> str:

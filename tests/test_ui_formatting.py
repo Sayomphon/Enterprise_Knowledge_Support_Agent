@@ -19,6 +19,8 @@ from src.schemas import RetrievedDocument
 from ui.formatting import (
     _axis_position,
     _band_word,
+    _node_time_label,
+    _source_list_html,
     _baseline_block,
     _baseline_run_html,
     _baseline_run_lines,
@@ -356,10 +358,12 @@ def _session_record(**overrides) -> dict:
 class TestSessionExportRows(unittest.TestCase):
     """The export carries telemetry, never an answer or its evidence."""
 
-    # AGENTS.md section 8 plus the three fields that identify a session
-    # row. Asserted as a set so a field added without thought fails here.
+    # AGENTS.md section 8 plus the four fields that identify a row: its
+    # scope, its session, its request id and its route. Asserted as a set
+    # so a field added without thought fails here.
     EXPECTED_KEYS = {
         "scope",
+        "session_id",
         "request_id",
         "timestamp",
         "query",
@@ -373,6 +377,7 @@ class TestSessionExportRows(unittest.TestCase):
         "scope_topics",
         "scope_reason",
         "latency_ms",
+        "node_seconds",
         "llm_calls",
     }
 
@@ -542,6 +547,78 @@ Calibration (21 cases), strict exit 0:
 
         self.assertIn("araya-run-result--fail", markup)
         self.assertNotIn("araya-run-result--ok", markup)
+
+
+class TestCitationRows(unittest.TestCase):
+    """The answer names its evidence; it does not reprint it."""
+
+    def _state(self) -> dict:
+        evidence = _policy_evidence()
+        return _answered_state(
+            valid_citations=[evidence.source_id],
+            answer_evidence=[evidence],
+        )
+
+    def test_a_citation_row_names_the_document(self) -> None:
+        markup = _source_list_html(self._state())
+
+        self.assertIn("FIN-001", markup)
+        self.assertIn("Expense process", markup)
+
+    def test_the_document_text_is_not_reprinted_under_the_answer(
+        self,
+    ) -> None:
+        # The answer above already is the grounded reading of this text;
+        # a truncated copy under it invited a word-by-word comparison.
+        markup = _source_list_html(self._state())
+
+        self.assertNotIn("Expense Portal", markup)
+
+    def test_there_is_nothing_to_expand(self) -> None:
+        markup = _source_list_html(self._state())
+
+        self.assertNotIn("<details", markup)
+        self.assertNotIn("<summary", markup)
+
+    def test_a_citation_without_its_document_is_still_listed(self) -> None:
+        # The id passed validation; hiding the row would hide the
+        # mismatch between the citation set and the selected evidence.
+        state = _answered_state(
+            valid_citations=["FIN-404"], answer_evidence=[]
+        )
+
+        self.assertIn("FIN-404", _source_list_html(state))
+
+
+class TestNodeTimings(unittest.TestCase):
+    """Per-node durations, measured by the seam and shown in the trace."""
+
+    def test_a_node_that_never_ran_shows_no_time(self) -> None:
+        self.assertEqual(_node_time_label(None), "")
+
+    def test_a_sub_second_node_is_reported_in_milliseconds(self) -> None:
+        # Deterministic nodes finish well under a millisecond; three
+        # decimal places of seconds would print all of them as 0.000s.
+        self.assertEqual(_node_time_label(0.00031), "0.3ms")
+
+    def test_a_provider_call_is_reported_in_seconds(self) -> None:
+        self.assertEqual(_node_time_label(30.858), "30.86s")
+
+    def test_the_trace_carries_the_measurement_of_each_node(self) -> None:
+        state = _answered_state()
+        rows = _trace_rows(state, {"input_guardrail": 0.0004})
+
+        guardrail = next(row for row in rows if row[0] == "input_guardrail")
+        report = next(row for row in rows if row[0] == "report")
+        self.assertEqual(guardrail[4], "0.4ms")
+        self.assertEqual(report[4], "")
+
+    def test_a_request_recorded_without_timings_still_renders(self) -> None:
+        # History written before the seam measured anything must not make
+        # the panel raise; it simply shows no per-node time.
+        rows = _trace_rows(_answered_state())
+
+        self.assertTrue(all(row[4] == "" for row in rows))
 
 
 class TestResponsiveAppBar(unittest.TestCase):

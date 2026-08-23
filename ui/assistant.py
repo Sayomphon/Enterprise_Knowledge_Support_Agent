@@ -10,6 +10,7 @@ the validator refused.
 from __future__ import annotations
 
 import html
+from datetime import datetime
 
 import streamlit as st
 
@@ -43,11 +44,12 @@ from ui.labels import (
     SIMILARITY_FOOTNOTE,
     SOURCES_HEADER,
     SUGGESTED_QUESTIONS,
+    THINKING_LABEL,
     USER_TURN_LABEL,
     VIEW_SEPARATION_NOTE,
     VIEW_SWITCH_LABELS,
 )
-from ui.styles import _CHAT_LAYOUT_CSS
+from ui.styles import _CHAT_DARK_CSS, _CHAT_LAYOUT_CSS
 from ui.formatting import (
     _answer_html,
     _answer_markdown,
@@ -195,7 +197,11 @@ def _render_notice_card(
                     help=question,
                     use_container_width=True,
                 ):
-                    _ask(question)
+                    # Same door as the composer: the next turn is drawn
+                    # at the end of the transcript, not inside the card
+                    # that offered it.
+                    st.session_state["araya_pending"] = question
+                    st.rerun()
         with columns[-1]:
             st.markdown(
                 f'<span class="araya-request-id">{request_id}</span>',
@@ -265,13 +271,20 @@ def _render_agent_card(record: dict) -> None:
 def _ask(query: str) -> None:
     """Run one question through the pipeline and store its outcome.
 
-    Shared by the composer and the starter questions so that both enter
-    the graph by the same door; the view adds nothing to the query but
-    the surrounding whitespace it strips.
+    The question is drawn before the run starts, with the status under
+    it: a request can take half a minute, and until now the screen sat
+    unchanged for all of it and then produced the question and its answer
+    together. Both the composer and the starter questions arrive here
+    through ``araya_pending``, so the turn is always appended at the end
+    of the transcript rather than wherever the widget happened to be.
     """
-    with st.spinner("กำลังค้นหาจากฐานความรู้..."):
-        state, latency = _invoke_graph(query)
-    _record_request(query, state, latency)
+    _render_user_bubble(
+        query, datetime.now().astimezone().isoformat(timespec="seconds")
+    )
+    with st.container(key="araya_thinking"):
+        with st.spinner(THINKING_LABEL):
+            state, latency, node_seconds = _invoke_graph(query)
+    _record_request(query, state, latency, node_seconds)
     st.rerun()
 
 
@@ -305,28 +318,48 @@ def _render_empty_state() -> None:
                     use_container_width=True,
                     wrap=True,
                 ):
-                    _ask(question)
+                    st.session_state["araya_pending"] = question
+                    st.rerun()
     st.markdown(_scope_strips_html(), unsafe_allow_html=True)
 
 
 def _render_employee_view() -> None:
     """Chat-style employee flow: ask, then read a grounded, cited answer."""
     st.markdown(_CHAT_LAYOUT_CSS, unsafe_allow_html=True)
+    # Injected after the light tokens so it overrides them, exactly as
+    # the console does with its own sheet.
+    if st.session_state.get("araya_dark"):
+        st.markdown(_CHAT_DARK_CSS, unsafe_allow_html=True)
     history = st.session_state.get("history", [])
-    if not history:
-        _render_empty_state()
+    pending = st.session_state.get("araya_pending")
+    # The opening screen gives way as soon as a question is in flight:
+    # the starter cards would otherwise sit above the question they just
+    # sent. The block is always rendered, empty or not -- Streamlit keeps
+    # the previous run's elements on screen, faded, until something takes
+    # their place, and an omitted block leaves those ghosts behind for as
+    # long as the request takes.
+    with st.container(key="araya_opening"):
+        if not history and not pending:
+            _render_empty_state()
     # Each turn states its own clock, so the transcript no longer opens
     # with a single date divider that scrolls away after two questions.
     for record in history:
         _render_user_bubble(record["query"], record["timestamp"])
         _render_agent_card(record)
+    if pending:
+        st.session_state.pop("araya_pending", None)
+        _ask(pending)
 
     # The composer enforces the same length ceiling the guardrail applies,
     # so an over-length question is stopped at the keyboard instead of
     # being sent and rejected.
     query = st.chat_input(CHAT_PLACEHOLDER, max_chars=config.MAX_QUERY_CHARS)
     if query and query.strip():
-        _ask(query.strip())
+        # Handed to the next run rather than answered here: that run
+        # draws the question at the end of the transcript first, which is
+        # where a reader is looking.
+        st.session_state["araya_pending"] = query.strip()
+        st.rerun()
 
 
 def _render_chat_sidebar() -> None:
@@ -398,8 +431,11 @@ def _render_chat_topbar() -> None:
     translated copy exists to switch to.
     """
     with st.container(key="araya_topbar"):
+        # The switch column carries its own floor in the stylesheet, the
+        # identity takes what is left, and the two utilities share the
+        # last cell so they read as one group at the end of the bar.
         switch, identity, action = st.columns(
-            [3, 3, 1], vertical_alignment="center"
+            [3, 4, 3], vertical_alignment="center"
         )
         with switch:
             # Seeded through session state rather than `default=`: the
@@ -422,10 +458,21 @@ def _render_chat_topbar() -> None:
                 unsafe_allow_html=True,
             )
         with action:
-            with st.popover(
-                "Help", icon=":material/help:", use_container_width=True
-            ):
-                st.markdown(HELP_TEXT)
+            with st.container(key="araya_chat_actions"):
+                theme, help_action = st.columns(
+                    [1, 1], vertical_alignment="center"
+                )
+                with theme:
+                    # The same switch the console carries: the theme is a
+                    # property of the reader, not of one of the two pages.
+                    st.toggle("Dark", key="araya_dark")
+                with help_action:
+                    with st.popover(
+                        "Help",
+                        icon=":material/help:",
+                        use_container_width=False,
+                    ):
+                        st.markdown(HELP_TEXT)
     # Navigating from inside the column would abandon the layout block
     # half-built, so the armed jump is taken once the bar is complete.
     if st.session_state.pop("araya_goto_console", False):

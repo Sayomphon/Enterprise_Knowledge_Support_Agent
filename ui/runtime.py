@@ -58,11 +58,11 @@ def _graph_and_retriever() -> tuple[
     )
 
 
-def _invoke_graph(query: str) -> tuple[PipelineState, float]:
-    """Run one query through the real pipeline, measuring wall latency.
+def _invoke_graph(query: str) -> tuple[PipelineState, float, dict[str, float]]:
+    """Run one query through the real pipeline, timing each node.
 
     Every node inside the graph degrades to a logged fallback on its own,
-    so a failure that escapes ``invoke`` is a fault in the runtime around
+    so a failure that escapes the run is a fault in the runtime around
     them -- and on a Streamlit page an escaping exception is rendered as
     a traceback that may carry a filesystem path, a prompt fragment or a
     provider payload (AGENTS.md section 4, invariant 10). This seam
@@ -70,18 +70,46 @@ def _invoke_graph(query: str) -> tuple[PipelineState, float]:
     knows how to draw. Only the exception type reaches stderr, and no
     telemetry is written here: logging is the graph's job, and the UI
     layer holds no business logic (AGENTS.md section 3).
+
+    The graph is streamed rather than invoked so the wall clock can be
+    read between node updates. This is still one run of one request --
+    streaming is how that run reports its steps -- and the final state is
+    the last full-value chunk, which is what ``invoke`` would return. The
+    alternative would be a per-node timing field inside
+    ``PipelineState``, which changes the pipeline's contract for a number
+    only the console reads.
+
+    Returns:
+        The final state, the total wall latency, and seconds per node
+        keyed by the graph's own node names. A node that never ran is
+        absent rather than zero, and a degraded run returns whatever was
+        measured before the fault.
     """
     graph, _, _ = _graph_and_retriever()
     started = time.perf_counter()
+    mark = started
+    timings: dict[str, float] = {}
+    state: PipelineState = {"query": query}
     try:
-        state: PipelineState = graph.invoke({"query": query})
+        for mode, chunk in graph.stream(
+            {"query": query}, stream_mode=["updates", "values"]
+        ):
+            now = time.perf_counter()
+            if mode == "updates":
+                # A node can report more than once on a loop; the times
+                # add up rather than the last one replacing the first.
+                for node in chunk:
+                    timings[node] = timings.get(node, 0.0) + (now - mark)
+            else:
+                state = chunk
+            mark = now
     except Exception as exc:
         print(
             f"ui.runtime: request degraded after {type(exc).__name__}",
             file=sys.stderr,
         )
         state = _unhandled_failure_state(query)
-    return state, time.perf_counter() - started
+    return state, time.perf_counter() - started, timings
 
 
 def _unhandled_failure_state(query: str) -> PipelineState:
@@ -105,14 +133,27 @@ def _unhandled_failure_state(query: str) -> PipelineState:
     }
 
 
-def _record_request(query: str, state: PipelineState, latency: float) -> None:
+def _record_request(
+    query: str,
+    state: PipelineState,
+    latency: float,
+    node_seconds: dict[str, float] | None = None,
+) -> None:
     """Append one real request outcome to the active session's history.
 
     The request id is session-scoped presentation bookkeeping (it indexes
     that session's history list); every other stored field comes from the
     graph or is measured here. History is telemetry for the audit view,
     never conversation memory for the pipeline: no earlier turn is passed
-    back into ``invoke``.
+    back into the graph.
+
+    Args:
+        query: The question as it was submitted.
+        state: Final pipeline state for this request.
+        latency: Total wall seconds measured around the run.
+        node_seconds: Seconds per node from ``_invoke_graph``. A caller
+            with no measurement passes nothing rather than zeros, because
+            a zero would read as a node that ran instantly.
     """
     session = _active_session()
     history = session["history"]
@@ -125,6 +166,13 @@ def _record_request(query: str, state: PipelineState, latency: float) -> None:
             "query": query,
             "state": state,
             "latency_seconds": round(latency, 3),
+            # Measured around each node by the streaming run, so the
+            # trace can say where a slow request spent its time instead
+            # of only how long it took in total.
+            "node_seconds": {
+                node: round(seconds, 4)
+                for node, seconds in (node_seconds or {}).items()
+            },
         }
     )
     # Rebinding keeps the flat key and the record pointing at the same
@@ -219,6 +267,31 @@ def _start_new_session() -> None:
     session = _new_session_record()
     _sessions().append(session)
     _bind_active(session)
+
+
+def _all_requests() -> list[dict]:
+    """Return every request of this browser tab, oldest first.
+
+    The console is a view over the whole tab rather than over whichever
+    session the assistant happens to be showing: an operator reading the
+    route split or the fallback triage wants what the app did, not what
+    one transcript did. Each row is a shallow copy carrying the id of the
+    session it came from, because ``Q-001`` exists once per session and
+    the console keys its selection on the pair.
+
+    Returns:
+        Session records with an added ``session_id``, ordered by their
+        timestamp. Records themselves are not mutated.
+    """
+    rows: list[dict] = []
+    for session in _sessions():
+        for record in session["history"]:
+            rows.append({**record, "session_id": session["session_id"]})
+    # The sessions list is already in creation order and each history is
+    # append-only, so this only matters if two sessions ever interleave;
+    # sorting on the stamp keeps that case honest rather than assuming.
+    rows.sort(key=lambda row: row["timestamp"])
+    return rows
 
 
 def _switch_session(session_id: str) -> None:
