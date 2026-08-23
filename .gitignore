@@ -23,3 +23,9 @@ __pycache__/
 tmp/
 sbom.json
 Enterprise_Knowledge_Support_Agent.md
+
+# Agent operating guides. These configure the coding agents that build this
+# repository; they are not part of the deliverable a reviewer installs, and
+# they stay on the machine that runs the agent.
+AGENTS.md
+CLAUDE.md
