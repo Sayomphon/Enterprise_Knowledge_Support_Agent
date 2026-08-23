@@ -81,6 +81,7 @@ from ui.formatting import (
     _clock,
     _degraded_session_rows,
     _display_route,
+    _escape_markdown,
     _format_score,
     _gating_score,
     _kpi_html,
@@ -439,8 +440,13 @@ def _render_console_logs(query_filter: str, log: LogReadResult) -> None:
             )
             key = _request_key(row)
             if st.button(
+                # The badge is this module's own markup; the question is
+                # employee text on the same line, so it is neutralised --
+                # unescaped, a query spelling `:green-badge[Direct]`
+                # draws a second, forged verdict on a triage row.
                 f":{_ROUTE_BADGE_COLOURS[css]}-badge[{label}] "
-                f"**{row['request_id']}**  \n{row['query']}  \n`{meta}`",
+                f"**{row['request_id']}**  \n"
+                f"{_escape_markdown(row['query'])}  \n`{meta}`",
                 key=f"araya_req_{key}",
                 type="primary" if key == selected_key else "secondary",
                 use_container_width=True,
@@ -759,7 +765,12 @@ def _render_kb_cards() -> None:
                 "description" if document.source_type == "policy" else "forum"
             )
             if st.button(
-                f"**{document.source_id}**  \n{document.title}  \n"
+                # The title is free-form frontmatter, so it is
+                # neutralised here for the same reason the body is drawn
+                # with ``st.code`` below; ``source_type`` and ``status``
+                # are allowlisted by the loader and need no guard.
+                f"**{document.source_id}**  \n"
+                f"{_escape_markdown(document.title)}  \n"
                 f"`{document.source_type} · {document.status}`",
                 icon=f":material/{icon}:",
                 # The type is in the key so the stylesheet can tint the

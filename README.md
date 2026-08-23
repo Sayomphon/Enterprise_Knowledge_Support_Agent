@@ -96,7 +96,7 @@ suite if the two files drift apart.
 
 ```text
 ----------------------------------------------------------------------
-Ran 641 tests in 3.044s
+Ran 652 tests in 2.942s
 
 OK (skipped=5)
 ```

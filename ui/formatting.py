@@ -20,6 +20,7 @@ from datetime import datetime
 
 from src import config
 from src.fallback import ReasonFamily
+from src.logging_utils import redact_query
 from src.schemas import (
     PipelineState,
     RetrievedDocument,
@@ -805,9 +806,15 @@ def _session_export_rows(history: list[dict]) -> list[dict]:
     The rows are session telemetry, not a copy of the sink: they cover
     every route rather than the degraded ones, they carry the presentation
     ``request_id`` and ``session_id`` the console lists them under, and
-    ``latency_ms`` is the wall time the UI measured around ``invoke``
-    rather than the graph's own reading. ``scope`` names which of the two
-    an exported line came from, so a file holding both stays readable.
+    ``latency_ms`` is the wall time the UI measured around the run rather
+    than the graph's own reading. ``scope`` names which of the two an
+    exported line came from, so a file holding both stays readable.
+
+    What the two do share is redaction: ``query`` and ``rewritten_queries``
+    go through ``redact_query`` exactly as ``log_fallback_event`` does
+    (AGENTS.md section 7). The Query Logs export concatenates these rows
+    with sink rows, and one field name cannot mean masked on one line and
+    raw on the next.
 
     Args:
         history: Request records, as ``ui.runtime._all_requests`` returns
@@ -829,7 +836,11 @@ def _session_export_rows(history: list[dict]) -> list[dict]:
                 "session_id": record.get("session_id", ""),
                 "request_id": record["request_id"],
                 "timestamp": record["timestamp"],
-                "query": record["query"],
+                # Masked on the sink's own terms: an exported file is a
+                # second copy of the same employee questions, and the
+                # Query Logs export puts these rows beside sink rows
+                # under the same field name.
+                "query": redact_query(record["query"]),
                 "route": label.lower(),
                 "reason": state.get("fallback_reason")
                 or state.get("guardrail_reason"),
@@ -841,9 +852,13 @@ def _session_export_rows(history: list[dict]) -> list[dict]:
                     document.source_id
                     for document in state.get("retrieved_candidates", [])
                 ],
-                "rewritten_queries": list(
-                    state.get("rewritten_queries", [])
-                ),
+                # A rewrite is the employee's own question in the model's
+                # words, so it can carry the identifiers they typed and
+                # is masked on the same terms as the query above.
+                "rewritten_queries": [
+                    redact_query(str(rewrite))
+                    for rewrite in state.get("rewritten_queries", [])
+                ],
                 "alias_query_count": len(
                     state.get("alias_expansion_queries", [])
                 ),
@@ -1144,11 +1159,35 @@ def _rows_to_jsonl(rows: list[dict]) -> str:
     )
 
 
+def _csv_safe(cell: str) -> str:
+    """Stop a spreadsheet evaluating an exported cell as a formula.
+
+    Excel and LibreOffice execute a cell opening with ``=``, ``+``, ``-``
+    or ``@``, and CSV quoting does not prevent it -- the quotes are
+    stripped on import and the formula runs. The ``query`` column is
+    employee text and every route is exported, so a blocked injection
+    attempt is precisely what an operator downloads and opens. A leading
+    apostrophe is the spreadsheet's own literal marker and is not shown
+    in the cell.
+
+    A value that parses as a number is left alone, so a negative reading
+    stays a number rather than becoming text.
+    """
+    if not cell or cell[0] not in "=+-@":
+        return cell
+    try:
+        float(cell)
+    except ValueError:
+        return f"'{cell}"
+    return cell
+
+
 def _rows_to_csv(rows: list[dict]) -> str:
     """Serialise exported rows as CSV with a header line.
 
     Uses the standard library writer rather than string joining, so a
-    query containing a comma or a quote stays one field.
+    query containing a comma or a quote stays one field, and every cell
+    goes through ``_csv_safe`` so none of them is executable.
     """
     if not rows:
         return ""
@@ -1158,7 +1197,7 @@ def _rows_to_csv(rows: list[dict]) -> str:
     writer.writeheader()
     for row in rows:
         writer.writerow(
-            {key: _export_cell(row.get(key)) for key in columns}
+            {key: _csv_safe(_export_cell(row.get(key))) for key in columns}
         )
     return buffer.getvalue()
 

@@ -100,6 +100,31 @@ class TestSerialisers(unittest.TestCase):
             if line.startswith("|"):
                 self.assertEqual(line.count("|") - line.count("\\|"), 4)
 
+    def test_a_formula_shaped_query_cannot_execute_in_a_spreadsheet(
+        self,
+    ) -> None:
+        # Every route is exported, so a blocked injection attempt is what
+        # an operator downloads: the cell must reach Excel as text.
+        rows = [
+            {"query": "=cmd|'/c calc'!A0"},
+            {"query": "+1+1"},
+            {"query": "@SUM(1,2)"},
+            {"query": '=HYPERLINK("http://evil.example","click")'},
+        ]
+        exported = list(csv.DictReader(io.StringIO(_rows_to_csv(rows))))
+
+        for row in exported:
+            self.assertTrue(row["query"].startswith("'"))
+
+    def test_a_negative_reading_stays_a_number(self) -> None:
+        # The guard keys on the leading character, so a score or a delta
+        # must not be turned into text by it.
+        rows = [{"score": -0.42, "delta": "-5"}]
+        exported = list(csv.DictReader(io.StringIO(_rows_to_csv(rows))))
+
+        self.assertEqual(exported[0]["score"], "-0.42")
+        self.assertEqual(exported[0]["delta"], "-5")
+
     def test_jsonl_is_one_object_per_row_with_types_kept(self) -> None:
         lines = _rows_to_jsonl(self.ROWS).splitlines()
 
@@ -244,6 +269,44 @@ class TestRequestKeys(unittest.TestCase):
         )
 
         self.assertEqual(rows[0]["session_id"], "RAG-20260823-0900")
+
+
+class TestExportRedaction(unittest.TestCase):
+    """The export masks the identifier shapes the sink masks.
+
+    A downloaded file is a second copy of the same employee questions,
+    and the Query Logs export puts these rows beside sink rows under the
+    same field names (AGENTS.md section 7).
+    """
+
+    def test_an_identifier_in_the_query_is_masked(self) -> None:
+        rows = _session_export_rows(
+            [_request(query="เบอร์ 0812345678 ขอผมใช้เบิกได้ไหม")]
+        )
+
+        self.assertEqual(rows[0]["query"], "เบอร์ [TEL] ขอผมใช้เบิกได้ไหม")
+
+    def test_a_rewrite_is_masked_on_the_same_terms(self) -> None:
+        rows = _session_export_rows(
+            [
+                _request(
+                    rewritten_queries=["ติดต่อ hr@corp.co.th เรื่องเบิกค่าเดินทาง"]
+                )
+            ]
+        )
+
+        self.assertEqual(
+            rows[0]["rewritten_queries"],
+            ["ติดต่อ [EMAIL] เรื่องเบิกค่าเดินทาง"],
+        )
+
+    def test_an_ordinary_question_is_left_untouched(self) -> None:
+        # Redaction is a bounded safeguard, not a PII classifier: day
+        # counts and document ids stay intact so the row can still
+        # explain a retrieval.
+        rows = _session_export_rows([_request()])
+
+        self.assertEqual(rows[0]["query"], "ลาป่วยกี่วันต้องมีใบรับรองแพทย์")
 
 
 class TestCrossSessionAggregation(unittest.TestCase):

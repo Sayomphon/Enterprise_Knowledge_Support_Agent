@@ -277,6 +277,13 @@ def _ask(query: str) -> None:
     together. Both the composer and the starter questions arrive here
     through ``araya_pending``, so the turn is always appended at the end
     of the transcript rather than wherever the widget happened to be.
+
+    That key is cleared here rather than by the caller, and only once the
+    request is in history. Streamlit stops a running script at its next
+    enqueue when a fresh interaction arrives, so a question cleared
+    before the record exists is one the employee waited half a minute for
+    and never sees again; left in place, the interrupted run re-executes
+    it instead.
     """
     _render_user_bubble(
         query, datetime.now().astimezone().isoformat(timespec="seconds")
@@ -285,6 +292,7 @@ def _ask(query: str) -> None:
         with st.spinner(THINKING_LABEL):
             state, latency, node_seconds = _invoke_graph(query)
     _record_request(query, state, latency, node_seconds)
+    st.session_state.pop("araya_pending", None)
     st.rerun()
 
 
@@ -347,7 +355,7 @@ def _render_employee_view() -> None:
         _render_user_bubble(record["query"], record["timestamp"])
         _render_agent_card(record)
     if pending:
-        st.session_state.pop("araya_pending", None)
+        # ``_ask`` clears the key itself, after the outcome is recorded.
         _ask(pending)
 
     # The composer enforces the same length ceiling the guardrail applies,

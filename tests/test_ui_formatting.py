@@ -27,6 +27,7 @@ from ui.formatting import (
     _citation_numbers,
     _degraded_session_rows,
     _display_route,
+    _escape_markdown,
     _format_score,
     _gating_score,
     _log_matches,
@@ -639,6 +640,39 @@ class TestResponsiveAppBar(unittest.TestCase):
     def test_the_rail_width_is_relaxed_on_a_narrow_viewport(self) -> None:
         self.assertIn("@media (max-width: 768px)", _DESIGN_SYSTEM_CSS)
         self.assertIn("min(260px, 84vw)", _DESIGN_SYSTEM_CSS)
+
+
+class TestWidgetLabelEscaping(unittest.TestCase):
+    """Untrusted text in a widget label is data, never markup.
+
+    Streamlit renders a button label as Markdown, so the question and
+    the corpus title the console lists must be neutralised before they
+    reach one: the console is where an operator reads a verdict, and a
+    label that can draw its own is a label nobody can trust.
+    """
+
+    def test_a_query_cannot_draw_its_own_route_badge(self) -> None:
+        escaped = _escape_markdown(":green-badge[Direct] verified")
+
+        self.assertEqual(escaped, ":green-badge\\[Direct\\] verified")
+
+    def test_a_backtick_cannot_swallow_the_metadata_line(self) -> None:
+        # The request row ends in a code span; an unescaped backtick in
+        # the question opens one early and eats the clock and latency.
+        self.assertEqual(
+            _escape_markdown("ใช้ ` แทนอะไร"), "ใช้ \\` แทนอะไร"
+        )
+
+    def test_a_link_stays_text(self) -> None:
+        self.assertEqual(
+            _escape_markdown("[คลิก](https://evil.example)"),
+            "\\[คลิก\\](https://evil.example)",
+        )
+
+    def test_an_ordinary_question_is_unchanged(self) -> None:
+        question = "ลาป่วยกี่วันต้องมีใบรับรองแพทย์"
+
+        self.assertEqual(_escape_markdown(question), question)
 
 
 if __name__ == "__main__":

@@ -40,6 +40,23 @@ class _RecordingStreamlit:
         self.calls.append("rerun")
 
 
+class _InterruptingStreamlit(_RecordingStreamlit):
+    """``st`` stand-in whose status block is cut short mid-request.
+
+    Streamlit stops a running script at its next enqueue once a fresh
+    interaction arrives, and leaving the status block is such a point:
+    clicking the theme toggle or New Session while the spinner is up
+    ends the run before the outcome is recorded.
+    """
+
+    @contextlib.contextmanager
+    def spinner(self, text: str):
+        """Record the status, then end the run on the way out."""
+        self.calls.append(f"spinner:{text}")
+        yield
+        raise RuntimeError("rerun requested while the request was in flight")
+
+
 class TestOptimisticTurn(unittest.TestCase):
     """The question and the status precede the run that answers them."""
 
@@ -100,6 +117,62 @@ class TestOptimisticTurn(unittest.TestCase):
             self.calls[-2:],
             ["record", "rerun"],
         )
+
+
+class TestPendingHandoff(unittest.TestCase):
+    """The queued question outlives a run that does not finish.
+
+    ``araya_pending`` is the only copy of the question while the graph
+    is running: the composer has already been rerun away and nothing is
+    in history yet. Clearing it before the outcome is recorded loses the
+    request outright, so it is cleared after.
+    """
+
+    QUESTION = "ขั้นตอนการเบิกค่าแท็กซี่หลังทำ OT ต้องทำอย่างไร"
+
+    def _run(self, stub: _RecordingStreamlit) -> None:
+        """Drive ``_ask`` against one ``st`` stand-in."""
+        patches = [
+            mock.patch.object(assistant, "st", stub),
+            mock.patch.object(assistant, "_render_user_bubble"),
+            mock.patch.object(
+                assistant,
+                "_invoke_graph",
+                return_value=({"query": self.QUESTION}, 0.25, {}),
+            ),
+            mock.patch.object(
+                assistant,
+                "_record_request",
+                side_effect=lambda *_: stub.calls.append("record"),
+            ),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        stub.session_state["araya_pending"] = self.QUESTION
+
+    def test_a_recorded_turn_clears_the_queued_question(self) -> None:
+        stub = _RecordingStreamlit([])
+        self._run(stub)
+
+        assistant._ask(self.QUESTION)
+
+        self.assertNotIn("araya_pending", stub.session_state)
+        self.assertIn("record", stub.calls)
+
+    def test_an_interrupted_run_keeps_the_question_for_the_next_one(
+        self,
+    ) -> None:
+        stub = _InterruptingStreamlit([])
+        self._run(stub)
+
+        with self.assertRaises(RuntimeError):
+            assistant._ask(self.QUESTION)
+
+        self.assertEqual(
+            stub.session_state["araya_pending"], self.QUESTION
+        )
+        self.assertNotIn("record", stub.calls)
 
 
 if __name__ == "__main__":
