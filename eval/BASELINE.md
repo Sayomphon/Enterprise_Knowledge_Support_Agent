@@ -1546,3 +1546,82 @@ P1.
   back into the UI.
 * **P2 is untouched** — no lockfile with hashes, no SBOM, no CVE audit, no
   secret scanning.
+
+---
+
+# Phase 14 snapshot — supply-chain lock and the audit surface (2026-08-23)
+
+`src/` is untouched in this round: `git diff dfe5a04~1..HEAD -- src/ main.py
+app.py` returns nothing. What changed is the dependency lock, the CI workflow,
+and the Streamlit layer, so every pipeline metric below is expected to be
+identical to Phase 13. Running the gates again is how that expectation is
+checked rather than assumed, and it is also what keeps this file — which the
+console's Evaluation panel parses — describing the build a reader is looking at.
+
+## What changed around the pipeline
+
+* **P2 — `requirements.lock` under `--require-hashes`.** 78 packages against
+  2,144 distribution digests, resolved with `uv pip compile --universal
+  --generate-hashes`, with markers splitting the two releases that differ
+  between Python 3.11 and 3.12. `tests/test_requirements_lock.py` fails the
+  suite when the lock and `requirements.txt` drift apart. CI installs from the
+  lock, runs `pip check`, audits the locked tree against the advisory database,
+  publishes a CycloneDX SBOM, and scans the whole history with a
+  digest-verified `gitleaks`.
+* **The console became a view over the whole browser tab.**
+  `ui.runtime._all_requests()` flattens every session, and the Overview, the
+  threshold axis, the triage panel, Query Logs and the exports all read it, so a
+  console reading no longer depends on which session the assistant happens to
+  show. Requests are keyed `"<session_id>/<request_id>"` because `Q-001`
+  restarts in every session.
+* **Exports follow the section on screen.** One popover offers JSONL, CSV and
+  Markdown of exactly the rows the current section lists, and refuses with a
+  note rather than an empty file when there is nothing to export.
+* **The Evaluation panel parses this file.** It reads the last measured-results
+  block — a fenced run list and a metric table — and counts `eval/*.json` on
+  disk beside it, so a snapshot that has drifted from the fixtures it describes
+  is visible on screen instead of only in a re-run.
+* **The triage panel reads `reason_family()`** rather than inferring a tag from
+  which state field carried the code, so an empty query is no longer drawn as an
+  attack.
+
+## Measured results
+
+```text
+python -m unittest discover -s tests                Ran 652 tests, OK (skipped=5)
+                                                    (586 before this round)
+
+python eval/run_eval.py --set guardrail   --strict  exit 0
+python eval/run_eval.py --set calibration --strict  exit 0
+python eval/run_eval.py --set near_domain --strict  exit 0
+python eval/run_eval.py --set contracts   --strict  exit 0
+python eval/run_eval.py --set heldout_v2  --strict  exit 0
+python eval/run_eval.py --set heldout     --strict  exit 1 known miss ho_noisy_03
+```
+
+| Gate | Metric | Value |
+|---|---|---:|
+| guardrail | Injection Block Rate | 1.000 (28/28) |
+| guardrail | Benign Pass Rate | 1.000 (28/28) |
+| calibration | Answer-route Coverage / Precision | 1.000 (16/16) / 1.000 (16/16) |
+| near_domain | Unsupported In-domain Fallback Accuracy | 1.000 (20/20) |
+| near_domain | Answer-route Coverage | 1.000 (8/8) |
+| contracts | Citation Provenance Validity Rate | 1.000 (30/30) |
+| contracts | Invalid Candidate Leakage Rate | 0.000 (0/24) |
+| heldout | Answer-route Coverage | 0.857 (6/7) |
+| heldout_v2 | Answer-route Coverage | 1.000 (7/7) |
+
+The held-out split still exits `1` on `ho_noisy_03`, whose expanded score lands
+0.0114 under `FINAL_ANSWER_THRESHOLD`. It is reported, not tuned for: the
+threshold move that would admit it also readmits the in-domain hard negatives
+the scope gate exists to refuse.
+
+## What is not covered by this snapshot
+
+* **No live answer run.** The last one is Phase 13's; nothing in this round
+  touched a prompt, a contract, or a threshold, so re-spending the budget would
+  have measured provider variance rather than a change.
+* **The Streamlit layer is asserted at its pure seams only.** Formatting,
+  export payloads, runtime bookkeeping and the assistant's turn handling have
+  tests; `st.*` rendering, CSS and layout are still verified by walking both
+  pages by hand.

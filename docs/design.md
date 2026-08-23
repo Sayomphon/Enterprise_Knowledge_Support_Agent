@@ -4,8 +4,7 @@
 > minutes. Nothing here was cut; the README keeps a summary of each topic and
 > links to the section below that carries the full argument.
 >
-> Back to [README](../README.md) · engineering contract in [AGENTS.md](../AGENTS.md)
-> · worked examples in [demo.md](demo.md)
+> Back to [README](../README.md) · worked examples in [demo.md](demo.md)
 
 ## Contents
 
@@ -34,24 +33,24 @@ brief is confidential and is not reproduced or included in this repository.
 | Requirement | Where it is implemented | What proves it |
 |---|---|---|
 | **1. Data ingestion** — 5–10 mock documents mixing clear procedural policy with short, noisy chat messages containing slang, typos, and ambiguous content | [`data/docs/`](../data/docs/) — 8 Markdown files, 5 `policy` + 3 `chat`, loaded by [`src/ingestion/loader.py`](../src/ingestion/loader.py) | [`tests/test_loader.py`](../tests/test_loader.py) — all 8 load, duplicate `source_id` fails, missing title fails, `authority` must agree with `source_type`; the loaded index is shown in [the console](screenshots/ui_10_console_kb.png) |
-| **2a. Retrieval and generation pipeline** | [`src/graph.py`](../src/graph.py) — 10 nodes, 18 edges, 5 routes; retrieval in [`src/retrievers/local_tfidf.py`](../src/retrievers/local_tfidf.py), generation in [`src/agents/reporter.py`](../src/agents/reporter.py) | [`tests/test_graph.py`](../tests/test_graph.py) — every route asserted, including the LLM call count per route; [`tests/test_retrieval.py`](../tests/test_retrieval.py) for exact, typo, and out-of-domain queries |
-| **2b. Guardrail / validation layer** — out-of-scope questions and prompt injection are declined politely | [`src/guardrails/input_guardrail.py`](../src/guardrails/input_guardrail.py) (13 named rules), [`src/guardrails/scope_validator.py`](../src/guardrails/scope_validator.py) (topic gate); refusal wording in [`src/fallback.py`](../src/fallback.py) | [`tests/test_guardrail.py`](../tests/test_guardrail.py) and [`tests/test_scope_validator.py`](../tests/test_scope_validator.py); measured as Injection Block Rate 21/21 **and** Benign Pass Rate 21/21 in [`eval/RESULTS.md`](../eval/RESULTS.md); the refusal an employee actually sees is [this screenshot](screenshots/ui_04_blocked.png) |
-| **2c. Source attribution** — every answer names its document | [`src/guardrails/citation_validator.py`](../src/guardrails/citation_validator.py) validates, [`src/answer_renderer.py`](../src/answer_renderer.py) renders the markup | [`tests/test_citations.py`](../tests/test_citations.py); Citation Provenance Validity Rate 23/23 in [`eval/RESULTS.md`](../eval/RESULTS.md); worked output in [Demo](demo.md#the-six-examples), rendered as per-claim chips and expandable evidence in [the answer card](screenshots/ui_02_answered.png) |
-| **3. Evaluation and fallback** — when the system finds nothing, or the *confidence score* falls below a threshold, reply with a prepared fallback message and log that question for later analysis | Thresholds in [`src/config.py`](../src/config.py), fallback texts in [`src/fallback.py`](../src/fallback.py), JSONL writer in [`src/logging_utils.py`](../src/logging_utils.py) | [`tests/test_fallback.py`](../tests/test_fallback.py), [`tests/test_logging_utils.py`](../tests/test_logging_utils.py); harness in [`eval/run_eval.py`](../eval/run_eval.py), results in [`eval/RESULTS.md`](../eval/RESULTS.md); a real log line is shown in [section 11](#logging-and-privacy), and the operator's view of that log — reason codes, scores, and the resulting corpus backlog — in [the audit console](demo.md#7-the-audit-console-where-requirement-3-becomes-inspectable) |
-| **D. Deliverables** — runnable repo with `requirements.txt` and a setup README | [`requirements.txt`](../requirements.txt) (9 pinned direct dependencies), [Quick start](../README.md#2-quick-start) | The Quick start commands were run end to end in a fresh virtualenv on Python 3.11.15; the resulting output is [`eval/RESULTS.md`](../eval/RESULTS.md) |
+| **2a. Retrieval and generation pipeline** | [`src/graph.py`](../src/graph.py) — 11 nodes, 5 routes; retrieval in [`src/retrievers/local_tfidf.py`](../src/retrievers/local_tfidf.py), generation in [`src/agents/reporter.py`](../src/agents/reporter.py) | [`tests/test_graph.py`](../tests/test_graph.py) — every route asserted, including the LLM call count per route; [`tests/test_retrieval.py`](../tests/test_retrieval.py) for exact, typo, and out-of-domain queries |
+| **2b. Guardrail / validation layer** — out-of-scope questions and prompt injection are declined politely | [`src/guardrails/input_guardrail.py`](../src/guardrails/input_guardrail.py) (18 named rules), [`src/guardrails/scope_validator.py`](../src/guardrails/scope_validator.py) (topic gate); refusal wording in [`src/fallback.py`](../src/fallback.py) | [`tests/test_guardrail.py`](../tests/test_guardrail.py) and [`tests/test_scope_validator.py`](../tests/test_scope_validator.py); measured as Injection Block Rate 28/28 **and** Benign Pass Rate 28/28 in [`eval/RESULTS.md`](../eval/RESULTS.md); the refusal an employee actually sees is [this screenshot](screenshots/ui_04_blocked.png) |
+| **2c. Source attribution** — every answer names its document | [`src/guardrails/citation_validator.py`](../src/guardrails/citation_validator.py) validates, [`src/answer_renderer.py`](../src/answer_renderer.py) renders the markup | [`tests/test_citations.py`](../tests/test_citations.py); Citation Provenance Validity Rate 30/30 in [`eval/RESULTS.md`](../eval/RESULTS.md); worked output in [Demo](demo.md#the-six-examples), rendered as per-claim chips and expandable evidence in [the answer card](screenshots/ui_02_answered.png) |
+| **3. Evaluation and fallback** — when the system finds nothing, or the *confidence score* falls below a threshold, reply with a prepared fallback message and log that question for later analysis | Thresholds in [`src/config.py`](../src/config.py), fallback texts in [`src/fallback.py`](../src/fallback.py), JSONL writer in [`src/logging_utils.py`](../src/logging_utils.py) | [`tests/test_fallback.py`](../tests/test_fallback.py), [`tests/test_logging_utils.py`](../tests/test_logging_utils.py); harness in [`eval/run_eval.py`](../eval/run_eval.py), results in [`eval/RESULTS.md`](../eval/RESULTS.md); a real log line is shown in [Logging and privacy](#logging-and-privacy), and the operator's view of that log — reason codes, scores, and the resulting corpus backlog — in [the audit console](demo.md#7--the-audit-console-where-requirement-3-becomes-inspectable) |
+| **D. Deliverables** — runnable repo with pinned dependencies and a setup README | [`requirements.txt`](../requirements.txt) (9 direct pins) and [`requirements.lock`](../requirements.lock) (78 packages, 2,144 hashes), [Quick start](../README.md#2-quick-start) | The Quick start commands were run end to end in clean virtualenvs on 3.11 and 3.12; output in [`eval/RESULTS.md`](../eval/RESULTS.md) and the last block of [`eval/BASELINE.md`](../eval/BASELINE.md) |
 
 **One word in requirement 3 is deliberately not the word this system uses:
 *confidence score*.** The gate the brief asks for is here and is the three-band
-router in [section 5](../README.md#3-architecture) — the quantity it compares is
+router in [the architecture section](../README.md#3-architecture) — the quantity it compares is
 `raw_retrieval_score` (and `expanded_retrieval_score` after a rewrite) against
 `REWRITE_FLOOR` 0.10, `DIRECT_ANSWER_THRESHOLD` 0.19, and
 `FINAL_ANSWER_THRESHOLD` 0.21, each calibrated and traced to its evidence in
-[section 12](#configuration). Below the threshold, the request gets the
+[Configuration](#configuration). Below the threshold, the request gets the
 prepared fallback message and a JSONL record. What the number is *called*
 differs on purpose: a cosine similarity of 0.22 is not a 22% chance the answer
 is right, and labelling it a confidence would invite exactly that reading, so it
 is named a retrieval similarity heuristic everywhere it is shown
-([section 8](#design-decisions)). Same gate the brief describes, a name that
+([Design decisions](#design-decisions)). Same gate the brief describes, a name that
 does not overclaim.
 
 **What here goes beyond the brief, and why.** Three things were added as
@@ -59,14 +58,14 @@ engineering judgement, not as requirements, and a reviewer should be able to tel
 them apart. First, **policy authority is separated from chat recall**: the brief
 asks for a corpus that mixes both, and answering a rule from a colleague's chat
 message is the obvious failure that mix invites, so a normative answer now
-requires an active policy document behind it ([section 7](#policy-authority-versus-chat-recall)).
+requires an active policy document behind it ([Policy authority versus chat recall](#policy-authority-versus-chat-recall)).
 Second, **the model's output is a candidate, not an answer**: it is validated
 claim by claim before any text is rendered, which is what makes "every answer
 cites a source" an enforced property instead of a prompt instruction
-([section 9](../README.md#6-scope-and-what-a-citation-proves)). Third, **a supported-topic gate sits
+([what a citation proves](../README.md#6-scope-and-what-a-citation-proves)). Third, **a supported-topic gate sits
 in front of the score**, because retrieval similarity cannot distinguish a
 question the corpus answers from one it merely resembles
-([section 6](../README.md#6-scope-and-what-a-citation-proves)).
+([what a citation proves](../README.md#6-scope-and-what-a-citation-proves)).
 
 ---
 
@@ -138,7 +137,7 @@ cases whose score falls under a threshold while the right document is still
 retrieved. The cost
 is that the score is pure surface overlap, so two texts about different things
 that share vocabulary score highly — which is exactly the hole the scope gate in
-[section 6](../README.md#6-scope-and-what-a-citation-proves) exists to plug. I would revisit
+[what a citation proves](../README.md#6-scope-and-what-a-citation-proves) exists to plug. I would revisit
 this the moment the corpus grows past a few dozen documents, where lexical
 collisions stop being manageable.
 
@@ -150,7 +149,7 @@ embeddings plus a vector store, a hybrid of BM25 and dense retrieval, or staying
 lexical. Staying lexical also keeps the whole retrieval path runnable with no
 credential, which is what makes the offline test suite and the zero-key demo
 routes possible at all. The cost is real and is the first limitation listed in
-[section 14](../README.md#7-limitations-and-production-next-steps): there is no semantic matching, so a
+[the limitations](../README.md#7-limitations-and-next-steps): there is no semantic matching, so a
 correctly-phrased question using vocabulary absent from the corpus will miss. The
 seam is ready — `Retriever` is a protocol in
 [`src/retrievers/base.py`](../src/retrievers/base.py), so a dense backend is a new
@@ -165,7 +164,7 @@ given. The options were rewrite-always, rewrite-never, or rewrite only in a
 calibrated middle band. The band won: below 0.10 the question falls back
 untouched, above 0.19 it never needed help. The cost is a threshold pair that has
 to be maintained, and a medium band whose behaviour depends on live model output
-— demonstrated concretely in [section 4](demo.md#the-six-examples), where the
+— demonstrated concretely in [the six examples](demo.md#the-six-examples), where the
 same slang query answered once and fell back twice. I would change this if
 rewrite recovery on the medium band stopped justifying the second call.
 
@@ -177,7 +176,7 @@ were fixed-size chunks, section-level chunks, or whole documents. The cost is
 that this does not survive a 40-page policy PDF, where a whole-document citation
 stops being useful evidence and the prompt stops fitting. That is the point at
 which chunking with hierarchical ids becomes necessary, and it is listed as such
-in [section 15](../README.md#7-limitations-and-production-next-steps).
+in [the limitations](../README.md#7-limitations-and-next-steps).
 
 **Treating the score as a heuristic, never as a confidence.** A cosine similarity
 of 0.22 is not a 22% chance the answer is right, and presenting it that way
@@ -201,7 +200,7 @@ away the recall it provides — `CHAT-001` is where the 22:00 OT cut-off is
 explained in the words an employee would actually use. Authority is metadata the
 loader cross-validates, never a model judgement. The cost is that the corpus now
 carries `authority`, `status`, and `canonical_source_ids` frontmatter that has to
-be maintained; [section 7](#policy-authority-versus-chat-recall) covers the
+be maintained; [Policy authority versus chat recall](#policy-authority-versus-chat-recall) covers the
 mechanics.
 
 ---
@@ -219,6 +218,7 @@ sequenceDiagram
     participant RT as retrieve_original
     participant KB as corpus
     participant VS as validate_scope
+    participant EX as expand_deterministic
     participant RW as rewrite
     participant RE as retrieve_expanded
     participant SE as select_evidence
@@ -249,7 +249,14 @@ sequenceDiagram
             VS-->>E: fixed fallback text
             Note over VS,P: no provider call - an out-of-domain query is never rewritten into the domain
         else medium band - raw from 0.10 up to 0.19
-            VS->>RW: query
+            VS->>EX: query and resolved topics
+            EX->>KB: search the corpus's own aliases for those topics
+            KB-->>EX: alias-expanded score
+            Note over EX,P: still no provider call - the deterministic half of the band
+            alt alias score at or above 0.21
+                EX->>SE: candidates
+            end
+            EX->>RW: query, only when the aliases did not lift it
             RW->>P: provider call 1 of 2, rewrite
             P-->>RW: candidate queries
             RW->>RW: re-screen for injection, then check intent is preserved
@@ -283,7 +290,7 @@ sequenceDiagram
     end
 ```
 
-Eight of the ten graph nodes appear as lifelines. The other two, `refuse` and
+Nine of the eleven graph nodes appear as lifelines. The other two, `refuse` and
 `fallback`, are the paired *"append reason"* and *"fixed text"* messages: both
 nodes do exactly those two things and nothing else, so giving them their own
 lifelines would widen the diagram without adding a step.
@@ -306,7 +313,7 @@ rule is paired with a benign counter-example by `rule_id`.
 
 | Layer | What it does | What it does not do |
 |---|---|---|
-| Input guardrail | 13 named regex rules screen the query before the first LLM call | Detect novel phrasings, or anything semantic |
+| Input guardrail | 18 named regex rules screen the query before the first LLM call | Detect novel phrasings, or anything semantic |
 | Rewrite re-screen | The same screen runs again on every model-generated rewrite candidate | Prevent a model from being confused by benign-looking text |
 | Evidence encoding | Retrieved text is `json.dumps`-encoded into the human message; the system prompt declares those values untrusted data | Solve indirect prompt injection |
 | Output validation | Claims are validated against the evidence ID set, its policy subset, and the figures the cited documents actually state | Verify that a claim is true |
@@ -322,16 +329,17 @@ splits it and NFC does not put it back; without that repair every Thai rule
 stops matching.
 
 **The regex screen is a precision-first prototype safeguard, not
-defence-in-depth.** It is measured on 21 curated attacks and 21 benign
+defence-in-depth.** It is measured on 28 curated attacks and 28 benign
 lookalikes, each rule paired with a benign counter-example so a new pattern
 cannot raise the block rate by breaking legitimate queries. `Injection Block
-Rate: 21/21` is a statement about those 21 cases and nothing else. Novel
+Rate: 28/28` is a statement about those 28 cases and nothing else. Novel
 phrasings will pass it — and a phrasing being *canonical* is no guarantee it is
 covered: the article in "ignore **the** previous instructions" was missing from
 the determiner slot until it was added here, and the guardrail set reported a
 perfect score throughout — 16/16 on the 32-case fixture of the time — because
 every fixture was written in the wording its own rule was built from. The cases
-that would have caught it are in the set now, which is part of why it holds 42.
+that would have caught it are in the set now, which is part of why it holds 56
+cases today.
 
 JSON encoding contains **delimiter breakout** — a document carrying a literal
 `</SOURCE>` can no longer close its own record. It does not contain **indirect
@@ -376,20 +384,20 @@ is logged as `low_retrieval_score` on purpose — so these two fields are what l
 a report group by topic without a routing rule being rewritten to suit it. Both
 are empty on a route that never reached the gate, such as a blocked request.
 
-Twenty-one reason codes are defined as an enum in
+Twenty-three reason codes are defined as an enum in
 [`src/fallback.py`](../src/fallback.py); ad-hoc strings are not permitted, and the
 complete set is:
 
 | Stage | Reason codes |
 |---|---|
 | Input validation | `prompt_injection`, `invalid_query_type`, `empty_query`, `query_too_long` |
-| Scope and authority | `unsupported_topic`, `ambiguous_topic`, `no_authoritative_evidence` |
+| Scope and authority | `unsupported_topic`, `ambiguous_topic`, `uncovered_expense_item`, `no_authoritative_evidence` |
 | Retrieval score | `low_retrieval_score`, `rewrite_low_retrieval_score` |
 | Rewrite | `rewrite_failure`, `rewrite_rejected` |
 | Answer service | `llm_not_configured`, `reporter_failure` |
 | Request budget | `request_deadline_exceeded` |
 | Deterministic stage crash | `retrieval_failure`, `evidence_failure` |
-| Answer contract | `missing_citation`, `fabricated_citation`, `invalid_answer_structure`, `insufficient_reporter_evidence`, `unsupported_numeric_claim` |
+| Answer contract | `missing_citation`, `fabricated_citation`, `invalid_answer_structure`, `insufficient_reporter_evidence`, `unsupported_numeric_claim`, `unsupported_claim_span` |
 
 Several of these exist specifically so a degraded request is not mislabelled.
 Six of them -- `llm_not_configured`, `reporter_failure`, `rewrite_failure`,
@@ -470,18 +478,26 @@ calibrated number; `.env` is git-ignored and never committed.
 | `OPENAI_API_KEY` | — | Checked lazily at the LLM boundary, never at start-up |
 | `MODEL_NAME` | `gpt-5-mini` | Reporter and Rewriter model |
 | `TEMPERATURE` | `0` | Determinism first |
-| `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` | `30` / `2` | Client hardening |
+| `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` | `30` / `2` | Reporter client hardening |
+| `LLM_REWRITE_TIMEOUT_SECONDS` / `LLM_REWRITE_MAX_RETRIES` | `10` / `1` | The rewrite is an optimisation, so it gets a tighter budget than the answer |
+| `REQUEST_DEADLINE_SECONDS` | `45` | Shared by both LLM boundaries; a boundary reached with nothing left is skipped as `request_deadline_exceeded` |
 | `REWRITE_FLOOR` | `0.10` | Below this, fall back without rewriting |
 | `DIRECT_ANSWER_THRESHOLD` | `0.19` | At or above this, answer directly |
 | `FINAL_ANSWER_THRESHOLD` | `0.21` | Minimum expanded score after a rewrite |
 | `SCOPE_MATCH_THRESHOLD` | `0.40` | Alias containment needed to claim a topic |
+| `SCOPE_TOPIC_MARGIN` | `0.30` | A topic is kept only within this margin of the winning topic |
 | `SCOPE_AMBIGUOUS_MIN_SCORE` | `0.11` | Second-topic score above which a refusal is reported as under-specified |
 | `REWRITE_CONTINUITY_THRESHOLD` | `0.05` | Minimum lexical continuity of an accepted rewrite |
 | `TOP_K` | `3` | Retrieved candidates |
 | `MAX_QUERY_CHARS` | `500` | Input length limit |
 | `CORPUS_DIR` | `data/docs` | Corpus location |
 | `FALLBACK_LOG_PATH` | `logs/fallback_queries.jsonl` | Telemetry sink |
+| `LOG_MAX_BYTES` / `LOG_BACKUP_COUNT` | `5000000` / `3` | Rotation ceiling and how many rotated pages are kept |
 | `ENABLE_OPS_VIEW` | `false` | Demo-only persistent audit surface |
+
+`MAX_ANSWER_CLAIMS = 6` is not an environment variable: it lives in
+[`src/schemas.py`](../src/schemas.py) because it is part of the provider
+contract the Reporter is validated against, not a deployment knob.
 
 Thresholds come from calibration, never from intuition, and
 [`src/config.py`](../src/config.py) is the single source of truth — no number is
@@ -532,14 +548,16 @@ way in the CLI and the UI, and it is never presented as a confidence percentage.
 │   ├── ingestion/loader.py    # Markdown + YAML frontmatter → Document
 │   └── retrievers/            # Character TF-IDF index + cosine scoring
 ├── data/docs/                 # 8 mock documents (Thai content, English filenames)
-├── docs/screenshots/          # Streamlit captures used in section 4 (real runs, not mockups)
+├── docs/                      # demo.md, design.md, and the Streamlit captures
 ├── eval/                      # Calibration / held-out / guardrail sets + runner
 ├── logs/                      # Runtime JSONL output (git-ignored except .gitkeep)
-└── tests/                     # Offline unit + graph route tests
+├── tests/                     # Offline unit + graph route tests
+├── requirements.txt           # 9 reviewed direct pins
+├── requirements.lock          # Same tree with hashes, installed under --require-hashes
+└── .github/workflows/ci.yml   # Suite, gates, CLI, health check, audit, SBOM, secret scan
 ```
 
-Start with [`AGENTS.md`](../AGENTS.md) section 2 for the architecture contract,
-[`src/graph.py`](../src/graph.py) for the routes, and
+Start with [`src/graph.py`](../src/graph.py) for the routes and
 [`tests/test_graph.py`](../tests/test_graph.py) for the executable specification of
 every branch above. The corpus itself is worth two minutes:
 [`data/docs/`](../data/docs/) holds five policy documents and three chat transcripts
@@ -574,16 +592,20 @@ These are the rest — real, and narrower.
   is also why enforcing it now would be a change no set can measure. A soft
   rule becomes justified the day an answer error in
   [`eval/ANSWER_RESULTS.md`](../eval/ANSWER_RESULTS.md) traces back to a rewrite
-  that dropped an anchor; Fact-Citation Alignment is 52/52 and none does.
+  that dropped an anchor; Fact-Citation Alignment has stayed perfect across all
+  three live runs (52/52, 46/46, 48/48) and none does.
 * **`telemetry_logged` reports one append attempt.** It does not prove the record
   is still on disk, and nothing detects a sink truncated between runs. The
   bounded reader counts malformed lines inside the read window only.
 * **The Ops / Audit console is a demo surface, not an observability stack.** It
-  reads this process's own session state and, when `ENABLE_OPS_VIEW` is on, tails
-  the local JSONL file. There are no metrics backend, no traces, no alerting, no
-  retention, and no aggregation across processes or restarts; the figures it
-  shows under *Evaluation* are transcribed from committed files rather than
-  measured live, and it says so on screen.
+  reads this browser tab's own session state — every session in the tab, not
+  just the one the assistant shows — and, when `ENABLE_OPS_VIEW` is on, tails
+  the local JSONL file. Reloading the page starts that state over: nothing but
+  the sink survives a refresh, on purpose. There is no metrics backend, no
+  traces, no alerting, no retention and no aggregation across processes or
+  restarts; its exports (JSONL, CSV, Markdown) serialise exactly the rows on
+  screen; and the figures under *Evaluation* are parsed from committed files
+  rather than measured live, which it says on screen.
 * **Lazy credential validation moves the failure later by design.** `--check`
   mitigates it, but an operator who never runs it meets a missing key at the
   first LLM-bound question.
@@ -628,7 +650,7 @@ has calibrated.
 ### Facet-based scope gate
 
 The scope gate today is a closed alias catalog per *topic*. Its known hole is
-stated in [section 6 of the README](../README.md#6-scope-and-what-a-citation-proves):
+stated in the README under [what a citation proves](../README.md#6-scope-and-what-a-citation-proves):
 an expense item nobody thought to list can still reach the answer route on the
 reimbursement **process** policy, which explains how to file a claim and says
 nothing about which items qualify. Seventeen unsupported topics are listed by
@@ -719,3 +741,23 @@ supersedes: HR-001@v2
 **What would trigger building it.** The first real policy update — that is, the
 first time a document is replaced rather than added. Until then there is no
 lifecycle to govern, and the fields would be metadata nobody maintains.
+
+---
+
+## When to escalate retrieval
+
+"BM25 → hybrid → embeddings" is the advice everyone gives and almost nobody
+attaches a trigger to. These are the measurable triggers this repository would
+act on, so the decision stays evidence-led:
+
+| Technology | Trigger that justifies it |
+|---|---|
+| **BM25** | Corpus reaches 10–100 documents, lengths vary widely, and exact-term ranking starts losing — visible as Recall@1 falling while Hit@3 holds |
+| **Embeddings** | A paraphrase blind set scores materially below lexical retrieval. The blind set has to exist *first*; without it this is an aesthetic choice |
+| **Hybrid** | Both are needed at once: semantic paraphrase recall *and* exact policy terms, amounts and times that an embedding blurs |
+| **Reranker** | The candidate pool grows large enough that top-rank precision, not recall, is the bottleneck |
+| **Vector DB** | The index no longer fits in memory, or incremental update, metadata filtering, or per-document ACLs become requirements |
+
+Not one of these is justified today: Hit@3 is 16/16 on calibration and 7/7 on
+both held-out splits, and Recall@1 misses once on calibration. Ranking is not
+the problem this corpus has.
